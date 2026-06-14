@@ -1,0 +1,11 @@
+[package]
+name = "android-kvm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.53", features = ["derive"] }
+dirs = "6.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "0.9.8"
