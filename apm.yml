@@ -1,0 +1,11 @@
+name: android-kvm
+version: 0.1.0
+description: Rust-first USB Android software KVM backed by scrcpy
+author: DivitMittal
+target:
+  - claude
+  - codex
+  - opencode
+type: instructions
+
+dependencies: {}
