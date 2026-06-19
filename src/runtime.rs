@@ -7,6 +7,7 @@ use input_capture::{CaptureEvent, InputCapture, Position};
 use input_event::{
   BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Event, KeyboardEvent, PointerEvent,
 };
+use tracing::{debug, info};
 
 use crate::config::Config;
 use crate::edge::Edge;
@@ -45,7 +46,7 @@ impl Runtime {
       .await
       .context("failed to create Android edge capture")?;
 
-    println!("watching {:?} edge for Android", self.config.android_edge);
+    info!(edge = ?self.config.android_edge, "watching Android edge");
 
     let _runtime_audio = if self.config.audio_always_on {
       self.start_audio()?.map(AudioSession::new)
@@ -54,6 +55,7 @@ impl Runtime {
     };
     let mut active = None;
     let mut pending_activation = None;
+    let mut idle_notice_logged = false;
     let mut idle = tokio::time::interval(Duration::from_secs(5));
 
     loop {
@@ -69,13 +71,15 @@ impl Runtime {
 
           match event {
             CaptureEvent::Begin if active.is_none() && pending_activation.is_none() => {
+              idle_notice_logged = false;
               pending_activation = Some(SwipeActivation::new(
                 self.config.android_edge,
                 self.config.activation_pixels,
               ));
-              println!(
-                "android edge armed; swipe {:?} through the edge to activate",
-                self.config.android_edge,
+              info!(
+                edge = ?self.config.android_edge,
+                activation_pixels = self.config.activation_pixels,
+                "Android edge armed; keep swiping through the edge to activate",
               );
             }
             CaptureEvent::Input(Event::Pointer(pointer_event)) => {
@@ -86,14 +90,14 @@ impl Runtime {
                     .release()
                     .await
                     .context("failed to release capture")?;
-                  println!("host focus active");
+                  self.log_focus_change(FocusTarget::Host);
                 }
               } else if let Some(activation) = pending_activation.as_mut() {
                 match activation.update(pointer_event) {
                   SwipeActivationDecision::Activate => {
                     pending_activation = None;
                     active = Some(self.start_android_focus()?);
-                    println!("android focus active");
+                    self.log_focus_change(FocusTarget::Android);
                     if let Some(session) = active.as_mut() {
                       if self.handle_pointer_event(session, pointer_event)? {
                         self.stop_android_focus(&mut active)?;
@@ -101,7 +105,7 @@ impl Runtime {
                           .release()
                           .await
                           .context("failed to release capture")?;
-                        println!("host focus active");
+                        self.log_focus_change(FocusTarget::Host);
                       }
                     }
                   }
@@ -111,7 +115,7 @@ impl Runtime {
                       .release()
                       .await
                       .context("failed to release capture")?;
-                    println!("host focus active");
+                    self.log_focus_change(FocusTarget::Host);
                   }
                   SwipeActivationDecision::Wait => {}
                 }
@@ -125,18 +129,22 @@ impl Runtime {
                     .release()
                     .await
                     .context("failed to release capture")?;
-                  println!("host focus active");
+                  self.log_focus_change(FocusTarget::Host);
                 }
               }
             }
             CaptureEvent::Begin => {}
           }
         }
-        _ = idle.tick(), if active.is_none() && pending_activation.is_none() => {
-          println!(
-            "waiting for {:?} edge capture; if crossing this edge does nothing, {}",
-            self.config.android_edge,
-            host_capture_help(),
+        _ = idle.tick(), if active.is_none()
+          && pending_activation.is_none()
+          && !idle_notice_logged =>
+        {
+          idle_notice_logged = true;
+          info!(
+            edge = ?self.config.android_edge,
+            help = host_capture_help(),
+            "waiting for edge capture",
           );
         }
       }
@@ -173,6 +181,7 @@ impl Runtime {
 
     let mut command = Command::new(&binary);
     command.args(args);
+    debug!(binary, "starting scrcpy audio process");
 
     command
       .spawn()
@@ -186,6 +195,10 @@ impl Runtime {
     };
 
     session.stop()
+  }
+
+  fn log_focus_change(&self, focus: FocusTarget) {
+    info!(focus = focus.as_str(), "focus changed");
   }
 
   fn handle_pointer_event(
@@ -238,6 +251,21 @@ impl Runtime {
     }
 
     Ok(false)
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FocusTarget {
+  Android,
+  Host,
+}
+
+impl FocusTarget {
+  fn as_str(self) -> &'static str {
+    match self {
+      Self::Android => "android",
+      Self::Host => "host",
+    }
   }
 }
 

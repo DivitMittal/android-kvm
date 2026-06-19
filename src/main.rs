@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use tracing::info;
+use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::Config;
 use crate::edge::Edge;
@@ -44,6 +46,8 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+  init_logging();
+
   let cli = Cli::parse();
   let mut config = Config::load(cli.config.as_deref())?;
   if let Some(android_edge) = cli.android_edge {
@@ -68,10 +72,21 @@ fn main() -> Result<()> {
     }
     Command::Check => {
       ScrcpyBackend::new(config.scrcpy).check()?;
-      println!("ok");
+      info!("dependency check passed");
       Ok(())
     }
   }
+}
+
+fn init_logging() {
+  let filter =
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("android_kvm=info"));
+
+  fmt()
+    .compact()
+    .with_env_filter(filter)
+    .with_target(false)
+    .init();
 }
 
 #[cfg(test)]
