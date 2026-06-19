@@ -9,6 +9,7 @@ anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
 dirs = "6.0.0"
 futures-util = "0.3.31"
+getrandom = "0.3.4"
 input-capture = { git = "https://github.com/feschber/lan-mouse.git" }
 input-event = { git = "https://github.com/feschber/lan-mouse.git" }
 keycode = "1.0.0"

@@ -53,7 +53,7 @@ impl ScrcpyServerControl {
   ) -> Result<Self> {
     let server_path = resolve_server_path(scrcpy_binary, server_path)?;
     let version = scrcpy_version(scrcpy_binary)?;
-    let scid = 0x4b564d31u32;
+    let scid = random_scid()?;
     let socket_name = format!("scrcpy_{scid:08x}");
     let device_server_path = "/data/local/tmp/scrcpy-server.jar";
 
@@ -73,6 +73,10 @@ impl ScrcpyServerControl {
 
     let listener = TcpListener::bind(("127.0.0.1", port))
       .with_context(|| format!("failed to listen on 127.0.0.1:{port}"))?;
+    let control_port = listener
+      .local_addr()
+      .context("failed to read control listener address")?
+      .port();
     listener
       .set_nonblocking(false)
       .context("failed to configure control listener")?;
@@ -82,7 +86,7 @@ impl ScrcpyServerControl {
         .args([
           "reverse",
           &format!("localabstract:{socket_name}"),
-          &format!("tcp:{port}"),
+          &format!("tcp:{control_port}"),
         ])
         .status()
         .with_context(|| format!("failed to create adb reverse tunnel with {adb}"))?,
@@ -160,7 +164,7 @@ impl ScrcpyServerControl {
       .context("failed to send UHID mouse scroll")
   }
 
-  pub fn set_key(&mut self, linux_key: u32, pressed: bool) -> Result<bool> {
+  pub fn set_key(&mut self, linux_key: u32, pressed: bool) -> Result<()> {
     self
       .control
       .set_key(linux_key, pressed)
@@ -258,9 +262,9 @@ impl<W: Write> ScrcpyControl<W> {
     self.writer.write_all(&msg)
   }
 
-  pub fn set_key(&mut self, linux_key: u32, pressed: bool) -> io::Result<bool> {
+  pub fn set_key(&mut self, linux_key: u32, pressed: bool) -> io::Result<()> {
     let Some(key) = keyboard_key(linux_key) else {
-      return Ok(false);
+      return Ok(());
     };
 
     self.keyboard.update_key(
@@ -272,8 +276,7 @@ impl<W: Write> ScrcpyControl<W> {
       },
     );
 
-    self.keyboard_input()?;
-    Ok(true)
+    self.keyboard_input()
   }
 
   fn keyboard_input(&mut self) -> io::Result<()> {
@@ -348,6 +351,14 @@ fn adb_command(adb: &str, serial: Option<&str>) -> Command {
     command.args(["-s", serial]);
   }
   command
+}
+
+fn random_scid() -> Result<u32> {
+  let mut bytes = [0u8; 4];
+  getrandom::fill(&mut bytes)
+    .map_err(|error| anyhow::anyhow!("failed to generate scrcpy scid: {error}"))?;
+  let scid = u32::from_ne_bytes(bytes);
+  Ok(scid.max(1))
 }
 
 fn ensure_success(status: std::process::ExitStatus, label: &str) -> Result<()> {
@@ -539,6 +550,22 @@ mod tests {
     assert!(parts.len() > 1);
     assert_eq!(parts.iter().map(|(x, _)| *x as i32).sum::<i32>(), 300);
     assert_eq!(parts.iter().map(|(_, y)| *y as i32).sum::<i32>(), -300);
+  }
+
+  #[test]
+  fn split_motion_keeps_exact_i8_boundaries_in_one_report() {
+    assert_eq!(split_motion(127, -127).collect::<Vec<_>>(), vec![(127, -127)]);
+  }
+
+  #[test]
+  fn split_motion_splits_just_past_i8_boundaries() {
+    let positive = split_motion(128, 0).collect::<Vec<_>>();
+    let negative = split_motion(-128, 0).collect::<Vec<_>>();
+
+    assert_eq!(positive, vec![(64, 0), (64, 0)]);
+    assert_eq!(positive.iter().map(|(x, _)| *x as i32).sum::<i32>(), 128);
+    assert_eq!(negative, vec![(-64, 0), (-64, 0)]);
+    assert_eq!(negative.iter().map(|(x, _)| *x as i32).sum::<i32>(), -128);
   }
 
   fn keyboard_report_at(out: &[u8], index: usize) -> [u8; 8] {
