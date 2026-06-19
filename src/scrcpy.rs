@@ -30,7 +30,7 @@ impl Default for ScrcpyConfig {
       audio_enabled: true,
       audio_buffer_ms: 200,
       keyboard: HidMode::Uhid,
-      mouse: HidMode::Disabled,
+      mouse: HidMode::Uhid,
       mouse_bind: "bhsn".to_string(),
       shortcut_mod: "rctrl".to_string(),
       extra_args: Vec::new(),
@@ -118,9 +118,7 @@ impl ScrcpyBackend {
 
     args.push(format!("--keyboard={}", self.config.keyboard.as_scrcpy_value()).into());
     args.push(format!("--mouse={}", self.config.mouse.as_scrcpy_value()).into());
-    if self.config.mouse != HidMode::Disabled {
-      args.push(format!("--mouse-bind={}", self.config.mouse_bind).into());
-    }
+    args.push(format!("--mouse-bind={}", self.config.mouse_bind).into());
     args.push(format!("--shortcut-mod={}", self.config.shortcut_mod).into());
     args.extend(self.config.extra_args.iter().map(OsString::from));
 
