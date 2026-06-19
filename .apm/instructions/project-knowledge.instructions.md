@@ -28,9 +28,9 @@ Run `cargo test` after Rust changes and `nix flake check` after Nix changes.
 The Rust code is split by responsibility:
 
 - `src/config.rs` loads TOML config from XDG config.
-- `src/edge.rs` contains the pure edge-transition state machine.
-- `src/scrcpy.rs` owns scrcpy process configuration and launching.
+- `src/edge.rs` contains the shared edge enum used by CLI/config/runtime code.
+- `src/scrcpy.rs` owns scrcpy process configuration checks; `src/scrcpy_control.rs` launches the direct `app_process` control server.
 
 ## Backend Direction
 
-The first backend milestone is a process-backed scrcpy launcher. The later backend should integrate directly with scrcpy's control path so global host input capture can be forwarded without relying on a focused scrcpy window.
+The backend integrates directly with scrcpy's control path so global host input capture can be forwarded without relying on a focused scrcpy window. Audio, when enabled, runs as a separate `scrcpy --no-control` process.

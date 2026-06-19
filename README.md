@@ -11,7 +11,7 @@ This is an initial buildable scaffold. It currently provides:
 - A Rust CLI.
 - Nix dev shell and package definition.
 - TOML configuration loading.
-- A scrcpy backend launcher matching the known-good UHID/no-video command.
+- A scrcpy control backend that launches scrcpy's server directly through `adb shell app_process`.
 - Optional scrcpy audio transfer configuration.
 - A Home Manager module exported as `homeManagerModules.android-kvm` and `homeManagerModules.default`.
 - A lan-mouse-backed edge capture runtime using `input-capture`/`input-event`.
@@ -38,13 +38,13 @@ Check that scrcpy is available:
 cargo run -- check
 ```
 
-Print the scrcpy command that would run:
+Print the scrcpy/adb commands that would run:
 
 ```bash
 cargo run -- run --dry-run
 ```
 
-Run scrcpy:
+Run android-kvm:
 
 ```bash
 cargo run -- run
@@ -56,10 +56,13 @@ Override the configured phone placement for one run:
 cargo run -- --android-edge left run
 ```
 
-Default backend command:
+Default control backend commands:
 
 ```bash
-scrcpy --no-video --no-window --audio-buffer=200 --keyboard=uhid --mouse=uhid --mouse-bind=bhsn --shortcut-mod=rctrl
+adb push '<scrcpy-server-from-scrcpy>' /data/local/tmp/scrcpy-server.jar
+adb reverse 'localabstract:scrcpy_<random-scid>' 'tcp:<allocated-control-port>'
+adb shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server '<scrcpy-version>' 'scid=<random-scid>' log_level=info video=false audio=false control=true send_dummy_byte=false send_device_meta=false send_frame_meta=false clipboard_autosync=false cleanup=false power_on=false
+scrcpy --no-video --no-window --no-control --audio-buffer=200
 ```
 
 At runtime, android-kvm owns the scrcpy control socket directly for UHID input. When `audio-enabled = true`, it also starts an audio-only scrcpy process with `--no-control` so audio routes to the host without competing for input control. By default, `audio-always-on = true` keeps this audio route active even while host focus is active. Set it to `false` to start audio only while Android focus is active.
@@ -89,14 +92,8 @@ control-port = 0
 [scrcpy]
 binary = "scrcpy"
 serial = "DEVICE_SERIAL"
-no-video = true
-no-window = true
 audio-enabled = true
 audio-buffer-ms = 200
-keyboard = "uhid"
-mouse = "uhid"
-mouse-bind = "bhsn"
-shortcut-mod = "rctrl"
 extra-args = []
 ```
 
@@ -127,13 +124,8 @@ programs.android-kvm = {
     audio-always-on = true;
     adb-binary = "adb";
     scrcpy = {
-      no-window = true;
       audio-enabled = true;
       audio-buffer-ms = 200;
-      keyboard = "uhid";
-      mouse = "uhid";
-      mouse-bind = "bhsn";
-      shortcut-mod = "rctrl";
     };
   };
 };
