@@ -1,7 +1,7 @@
 mod android;
 mod config;
+#[allow(dead_code)]
 mod edge;
-mod host;
 mod runtime;
 mod scrcpy;
 
@@ -11,7 +11,6 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
-use crate::host::default_host_pointer;
 use crate::runtime::Runtime;
 use crate::scrcpy::ScrcpyBackend;
 
@@ -51,7 +50,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
-            Runtime::new(config, default_host_pointer()?)
+            Runtime::new(config)
                 .run()
                 .context("android-kvm runtime failed")
         }

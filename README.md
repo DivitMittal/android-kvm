@@ -14,11 +14,13 @@ This is an initial buildable scaffold. It currently provides:
 - A scrcpy backend launcher matching the known-good UHID/no-video command.
 - Optional scrcpy audio transfer configuration.
 - A Home Manager module exported as `homeManagerModules.android-kvm` and `homeManagerModules.default`.
-- A tested edge-transition state machine.
-- A macOS host pointer backend that hides/re-centers the host cursor after edge activation.
-- ADB-backed Android pointer movement for the first functional handoff path.
+- A lan-mouse-backed edge capture runtime using `input-capture`/`input-event`.
+- Relative pointer motion forwarding from the OS capture backend into Android.
+- ADB-backed Android pointer movement for the first functional Android input path.
 
 Direct scrcpy protocol forwarding and full keyboard/button grabbing are the next milestones.
+
+The capture layer uses GPL-3.0-or-later lan-mouse crates, so this project is licensed as GPL-3.0-or-later.
 
 ## Usage
 
