@@ -80,12 +80,12 @@ extra-args = []
 
 ## Home Manager
 
-Import the module from the flake and configure `programs.android-kvm`:
+Import the module from the flake and configure `programs.android-kvm`.
 
 ```nix
-{
+imports = [
   inputs.android-kvm.homeManagerModules.android-kvm
-}
+];
 ```
 
 Example settings:
