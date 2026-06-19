@@ -23,11 +23,13 @@ impl Runtime {
     }
 
     pub fn run(&self) -> Result<()> {
-        tokio::runtime::Builder::new_current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .context("failed to create runtime")?
-            .block_on(self.run_async())
+            .context("failed to create runtime")?;
+        let local = tokio::task::LocalSet::new();
+
+        local.block_on(&runtime, self.run_async())
     }
 
     async fn run_async(&self) -> Result<()> {
