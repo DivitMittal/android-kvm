@@ -12,6 +12,7 @@ dependencies = [
  "futures-util",
  "input-capture",
  "input-event",
+ "keycode",
  "serde",
  "tokio",
  "toml",

@@ -5,13 +5,14 @@ use std::process::{Child, Command};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use keycode::{KeyMap, KeyMapping, KeyState, KeyboardState};
 
 const TYPE_UHID_CREATE: u8 = 12;
 const TYPE_UHID_INPUT: u8 = 13;
 const TYPE_UHID_DESTROY: u8 = 14;
 const HID_ID_KEYBOARD: u16 = 1;
 const HID_ID_MOUSE: u16 = 2;
-const KEYBOARD_KEYS: usize = 0x66;
+const KEYBOARD_ROLLOVER: usize = 6;
 
 const MOUSE_REPORT_DESC: &[u8] = &[
   0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29, 0x05,
@@ -31,8 +32,7 @@ const KEYBOARD_REPORT_DESC: &[u8] = &[
 pub struct ScrcpyControl<W> {
   writer: W,
   buttons: u8,
-  keyboard_mods: u8,
-  keyboard_keys: [bool; KEYBOARD_KEYS],
+  keyboard: KeyboardState,
 }
 
 pub struct ScrcpyServerControl {
@@ -195,8 +195,7 @@ impl<W: Write> ScrcpyControl<W> {
     Self {
       writer,
       buttons: 0,
-      keyboard_mods: 0,
-      keyboard_keys: [false; KEYBOARD_KEYS],
+      keyboard: KeyboardState::new(Some(KEYBOARD_ROLLOVER)),
     }
   }
 
@@ -264,40 +263,21 @@ impl<W: Write> ScrcpyControl<W> {
       return Ok(false);
     };
 
-    match key {
-      KeyboardKey::Modifier(bit) => {
-        if pressed {
-          self.keyboard_mods |= bit;
-        } else {
-          self.keyboard_mods &= !bit;
-        }
-      }
-      KeyboardKey::Usage(usage) => {
-        self.keyboard_keys[usage as usize] = pressed;
-      }
-    }
+    self.keyboard.update_key(
+      key,
+      if pressed {
+        KeyState::Pressed
+      } else {
+        KeyState::Released
+      },
+    );
 
     self.keyboard_input()?;
     Ok(true)
   }
 
   fn keyboard_input(&mut self) -> io::Result<()> {
-    let mut data = [0u8; 8];
-    data[0] = self.keyboard_mods;
-
-    let mut index = 2;
-    for (usage, pressed) in self.keyboard_keys.iter().enumerate() {
-      if !pressed {
-        continue;
-      }
-      if index >= data.len() {
-        data[2..].fill(1);
-        break;
-      }
-      data[index] = usage as u8;
-      index += 1;
-    }
-
+    let data = self.keyboard.usb_input_report().to_vec();
     self.hid_input(HID_ID_KEYBOARD, &data)
   }
 
@@ -315,72 +295,9 @@ impl<W: Write> ScrcpyControl<W> {
   }
 }
 
-enum KeyboardKey {
-  Modifier(u8),
-  Usage(u8),
-}
-
-fn keyboard_key(linux_key: u32) -> Option<KeyboardKey> {
-  let usage = match linux_key {
-    1 => 0x29,
-    2..=10 => linux_key + 0x1c,
-    11 => 0x27,
-    12 => 0x2d,
-    13 => 0x2e,
-    14 => 0x2a,
-    15 => 0x2b,
-    16 => 0x14,
-    17 => 0x1a,
-    18 => 0x08,
-    19 => 0x15,
-    20 => 0x17,
-    21 => 0x1c,
-    22 => 0x18,
-    23 => 0x0c,
-    24 => 0x12,
-    25 => 0x13,
-    26 => 0x2f,
-    27 => 0x30,
-    28 => 0x28,
-    29 => return Some(KeyboardKey::Modifier(1 << 0)),
-    30..=38 => linux_key - 26,
-    39 => 0x33,
-    40 => 0x34,
-    41 => 0x35,
-    42 => return Some(KeyboardKey::Modifier(1 << 1)),
-    43 => 0x31,
-    44..=50 => linux_key - 25,
-    51 => 0x36,
-    52 => 0x37,
-    53 => 0x38,
-    54 => return Some(KeyboardKey::Modifier(1 << 5)),
-    55 => 0x55,
-    56 => return Some(KeyboardKey::Modifier(1 << 2)),
-    57 => 0x2c,
-    58 => 0x39,
-    59..=68 => linux_key - 1,
-    87 => 0x44,
-    88 => 0x45,
-    96 => 0x58,
-    97 => return Some(KeyboardKey::Modifier(1 << 4)),
-    98 => 0x54,
-    100 => return Some(KeyboardKey::Modifier(1 << 6)),
-    102 => 0x4a,
-    103 => 0x52,
-    104 => 0x4b,
-    105 => 0x50,
-    106 => 0x4f,
-    107 => 0x4d,
-    108 => 0x51,
-    109 => 0x4e,
-    110 => 0x49,
-    111 => 0x4c,
-    125 => return Some(KeyboardKey::Modifier(1 << 3)),
-    126 => return Some(KeyboardKey::Modifier(1 << 7)),
-    _ => return None,
-  };
-
-  Some(KeyboardKey::Usage(usage as u8))
+fn keyboard_key(linux_key: u32) -> Option<KeyMap> {
+  let linux_key = u16::try_from(linux_key).ok()?;
+  KeyMap::from_key_mapping(KeyMapping::Evdev(linux_key)).ok()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -582,11 +499,53 @@ mod tests {
   }
 
   #[test]
+  fn maps_evdev_number_and_symbol_keys_to_usb_hid_usages() {
+    let mut out = Vec::new();
+    let mut control = ScrcpyControl::new(&mut out);
+
+    control.set_key(2, true).unwrap();
+    control.set_key(2, false).unwrap();
+    control.set_key(12, true).unwrap();
+
+    assert_eq!(keyboard_report_at(&out, 0), [0, 0, 0x1e, 0, 0, 0, 0, 0]);
+    assert_eq!(keyboard_report_at(&out, 1), [0; 8]);
+    assert_eq!(keyboard_report_at(&out, 2), [0, 0, 0x2d, 0, 0, 0, 0, 0]);
+  }
+
+  #[test]
+  fn maps_evdev_modifiers_to_usb_hid_modifier_byte() {
+    let mut out = Vec::new();
+    let mut control = ScrcpyControl::new(&mut out);
+
+    control.set_key(42, true).unwrap();
+    control.set_key(30, true).unwrap();
+
+    assert_eq!(keyboard_report_at(&out, 0), [0x02, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(keyboard_report_at(&out, 1), [0x02, 0, 0x04, 0, 0, 0, 0, 0]);
+  }
+
+  #[test]
+  fn maps_esc_to_usb_hid_instead_of_release_shortcut() {
+    let mut out = Vec::new();
+    ScrcpyControl::new(&mut out).set_key(1, true).unwrap();
+
+    assert_eq!(keyboard_report_at(&out, 0), [0, 0, 0x29, 0, 0, 0, 0, 0]);
+  }
+
+  #[test]
   fn splits_large_motion() {
     let parts = split_motion(300, -300).collect::<Vec<_>>();
 
     assert!(parts.len() > 1);
     assert_eq!(parts.iter().map(|(x, _)| *x as i32).sum::<i32>(), 300);
     assert_eq!(parts.iter().map(|(_, y)| *y as i32).sum::<i32>(), -300);
+  }
+
+  fn keyboard_report_at(out: &[u8], index: usize) -> [u8; 8] {
+    let start = index * 13;
+    assert_eq!(out[start], TYPE_UHID_INPUT);
+    assert_eq!(&out[start + 1..start + 3], &HID_ID_KEYBOARD.to_be_bytes());
+    assert_eq!(&out[start + 3..start + 5], &(8u16).to_be_bytes());
+    out[start + 5..start + 13].try_into().unwrap()
   }
 }
