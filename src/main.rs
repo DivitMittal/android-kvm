@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
+use crate::edge::Edge;
 use crate::runtime::Runtime;
 use crate::scrcpy::ScrcpyBackend;
 
@@ -19,6 +20,10 @@ use crate::scrcpy::ScrcpyBackend;
 struct Cli {
   #[arg(short, long, value_name = "PATH")]
   config: Option<PathBuf>,
+
+  /// Override which host edge leads to the Android device.
+  #[arg(long, value_name = "EDGE")]
+  android_edge: Option<Edge>,
 
   #[command(subcommand)]
   command: Command,
@@ -40,7 +45,10 @@ enum Command {
 
 fn main() -> Result<()> {
   let cli = Cli::parse();
-  let config = Config::load(cli.config.as_deref())?;
+  let mut config = Config::load(cli.config.as_deref())?;
+  if let Some(android_edge) = cli.android_edge {
+    config.android_edge = android_edge;
+  }
 
   match cli.command {
     Command::Run { dry_run } => {
@@ -63,5 +71,17 @@ fn main() -> Result<()> {
       println!("ok");
       Ok(())
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parses_android_edge_override() {
+    let cli = Cli::try_parse_from(["android-kvm", "--android-edge", "left", "run"]).unwrap();
+
+    assert_eq!(cli.android_edge, Some(Edge::Left));
   }
 }
