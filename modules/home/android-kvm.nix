@@ -24,6 +24,7 @@ in {
         android-edge = "right";
         activation-pixels = 24;
         release-pixels = 4;
+        audio-always-on = true;
         scrcpy = {
           audio-enabled = true;
           audio-buffer-ms = 200;

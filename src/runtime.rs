@@ -1,8 +1,9 @@
+use std::process::{Child, Command};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use input_capture::{Backend, CaptureEvent, InputCapture, Position};
+use input_capture::{CaptureEvent, InputCapture, Position};
 use input_event::{
   BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Event, KeyboardEvent, PointerEvent,
 };
@@ -33,7 +34,7 @@ impl Runtime {
   }
 
   async fn run_async(&self) -> Result<()> {
-    let mut capture = InputCapture::new(default_capture_backend())
+    let mut capture = InputCapture::new(None)
       .await
       .context("failed to create lan-mouse input capture backend")?;
     capture
@@ -46,6 +47,11 @@ impl Runtime {
 
     println!("watching {:?} edge for Android", self.config.android_edge);
 
+    let _runtime_audio = if self.config.audio_always_on {
+      self.start_audio()?.map(AudioSession::new)
+    } else {
+      None
+    };
     let mut active = None;
     let mut pending_activation = None;
     let mut idle = tokio::time::interval(Duration::from_secs(5));
@@ -128,8 +134,9 @@ impl Runtime {
         }
         _ = idle.tick(), if active.is_none() && pending_activation.is_none() => {
           println!(
-            "waiting for {:?} edge capture; if crossing this edge does nothing, check macOS Accessibility/Input Monitoring permissions and lan-mouse edge conflicts",
+            "waiting for {:?} edge capture; if crossing this edge does nothing, {}",
             self.config.android_edge,
+            host_capture_help(),
           );
         }
       }
@@ -146,11 +153,31 @@ impl Runtime {
       self.config.scrcpy_server_path.as_deref(),
       self.config.control_port,
     )?;
+    let audio = if self.config.audio_always_on {
+      None
+    } else {
+      self.start_audio()?.map(AudioSession::new)
+    };
 
     Ok(ActiveSession {
+      audio,
       control,
       pointer: VirtualAndroidPointer::new(&self.config),
     })
+  }
+
+  fn start_audio(&self) -> Result<Option<Child>> {
+    let Some((binary, args)) = audio_command_parts(&self.config) else {
+      return Ok(None);
+    };
+
+    let mut command = Command::new(&binary);
+    command.args(args);
+
+    command
+      .spawn()
+      .map(Some)
+      .with_context(|| format!("failed to start audio with {binary}"))
   }
 
   fn stop_android_focus(&self, active: &mut Option<ActiveSession>) -> Result<()> {
@@ -158,8 +185,7 @@ impl Runtime {
       return Ok(());
     };
 
-    session.control.stop()?;
-    Ok(())
+    session.stop()
   }
 
   fn handle_pointer_event(
@@ -216,8 +242,39 @@ impl Runtime {
 }
 
 struct ActiveSession {
+  audio: Option<AudioSession>,
   control: ScrcpyServerControl,
   pointer: VirtualAndroidPointer,
+}
+
+impl ActiveSession {
+  fn stop(&mut self) -> Result<()> {
+    self.audio.take();
+    self.control.stop()
+  }
+}
+
+impl Drop for ActiveSession {
+  fn drop(&mut self) {
+    let _ = self.stop();
+  }
+}
+
+struct AudioSession {
+  child: Child,
+}
+
+impl AudioSession {
+  fn new(child: Child) -> Self {
+    Self { child }
+  }
+}
+
+impl Drop for AudioSession {
+  fn drop(&mut self) {
+    self.child.kill().ok();
+    self.child.wait().ok();
+  }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -278,6 +335,27 @@ fn outward_motion(edge: Edge, dx: f64, dy: f64) -> i32 {
   };
 
   motion.round() as i32
+}
+
+fn audio_command_parts(config: &Config) -> Option<(String, Vec<String>)> {
+  if !config.scrcpy.audio_enabled {
+    return None;
+  }
+
+  let mut args = Vec::new();
+  if let Some(serial) = &config.scrcpy.serial {
+    args.push("--serial".to_string());
+    args.push(serial.clone());
+  }
+  args.extend([
+    "--no-video".to_string(),
+    "--no-window".to_string(),
+    "--no-control".to_string(),
+    format!("--audio-buffer={}", config.scrcpy.audio_buffer_ms),
+  ]);
+  args.extend(config.scrcpy.extra_args.clone());
+
+  Some((config.scrcpy.binary.clone(), args))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -354,21 +432,26 @@ fn entry_position(edge: Edge, bounds: VirtualAndroidBounds, release_pixels: i32)
   }
 }
 
-fn default_capture_backend() -> Option<Backend> {
+fn host_capture_help() -> &'static str {
   #[cfg(target_os = "macos")]
   {
-    Some(Backend::MacOs)
+    "check Accessibility/Input Monitoring permissions and lan-mouse edge conflicts"
   }
 
   #[cfg(windows)]
   {
-    Some(Backend::Windows)
+    "check Windows input-hook permissions and lan-mouse edge conflicts"
   }
 
   #[cfg(all(unix, not(target_os = "macos")))]
   {
-    None
+    "check Wayland/X11 input-capture availability, desktop portal permissions, and lan-mouse edge conflicts"
   }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn host_capture_help() -> &'static str {
+  "check whether lan-mouse has an input-capture backend for this host OS"
 }
 
 fn to_capture_position(edge: Edge) -> Position {
@@ -408,6 +491,37 @@ mod tests {
     assert_eq!(to_mouse_button(BTN_LEFT), Some(MouseButton::Left));
     assert_eq!(to_mouse_button(BTN_RIGHT), Some(MouseButton::Right));
     assert_eq!(to_mouse_button(BTN_MIDDLE), Some(MouseButton::Middle));
+  }
+
+  #[test]
+  fn builds_audio_only_scrcpy_command_when_audio_is_enabled() {
+    let mut config = Config::default();
+    config.scrcpy.binary = "scrcpy-test".to_string();
+    config.scrcpy.serial = Some("device-1".to_string());
+    config.scrcpy.audio_buffer_ms = 250;
+
+    let (binary, args) = audio_command_parts(&config).unwrap();
+
+    assert_eq!(binary, "scrcpy-test");
+    assert_eq!(
+      args,
+      vec![
+        "--serial".to_string(),
+        "device-1".to_string(),
+        "--no-video".to_string(),
+        "--no-window".to_string(),
+        "--no-control".to_string(),
+        "--audio-buffer=250".to_string(),
+      ]
+    );
+  }
+
+  #[test]
+  fn skips_audio_command_when_audio_is_disabled() {
+    let mut config = Config::default();
+    config.scrcpy.audio_enabled = false;
+
+    assert!(audio_command_parts(&config).is_none());
   }
 
   #[test]

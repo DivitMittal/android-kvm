@@ -8,13 +8,14 @@ use crate::edge::Edge;
 use crate::scrcpy::ScrcpyConfig;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct Config {
   pub android_edge: Edge,
   pub activation_pixels: u32,
   pub release_pixels: u32,
   pub poll_interval_ms: u64,
   pub pointer_scale: f32,
+  pub audio_always_on: bool,
   pub adb_binary: String,
   pub android_width: Option<i32>,
   pub android_height: Option<i32>,
@@ -31,6 +32,7 @@ impl Default for Config {
       release_pixels: 4,
       poll_interval_ms: 16,
       pointer_scale: 1.0,
+      audio_always_on: true,
       adb_binary: "adb".to_string(),
       android_width: None,
       android_height: None,
@@ -59,4 +61,28 @@ impl Config {
 
 fn default_config_path() -> Option<PathBuf> {
   dirs::config_dir().map(|dir| dir.join("android-kvm/config.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parses_kebab_case_audio_always_on() {
+    let config: Config = toml::from_str(
+      r#"
+android-edge = "left"
+audio-always-on = false
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(config.android_edge, Edge::Left);
+    assert!(!config.audio_always_on);
+  }
+
+  #[test]
+  fn defaults_audio_to_always_on() {
+    assert!(Config::default().audio_always_on);
+  }
 }
