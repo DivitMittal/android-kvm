@@ -148,3 +148,26 @@ fn shell_quote(value: &str) -> String {
 
     format!("'{}'", value.replace('\'', "'\\''"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn includes_audio_buffer_when_audio_is_enabled() {
+        let backend = ScrcpyBackend::new(ScrcpyConfig::default());
+
+        assert!(backend.command_preview().contains("--audio-buffer=200"));
+    }
+
+    #[test]
+    fn disables_audio_when_configured() {
+        let backend = ScrcpyBackend::new(ScrcpyConfig {
+            audio_enabled: false,
+            ..ScrcpyConfig::default()
+        });
+
+        assert!(backend.command_preview().contains("--no-audio"));
+        assert!(!backend.command_preview().contains("--audio-buffer"));
+    }
+}
