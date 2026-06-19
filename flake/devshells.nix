@@ -18,6 +18,7 @@
             cargo
             clippy
             rustc
+            rust-analyzer
             rustfmt
             scrcpy
             ;
