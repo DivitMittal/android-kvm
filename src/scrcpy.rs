@@ -7,171 +7,174 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct ScrcpyConfig {
-    pub binary: String,
-    pub serial: Option<String>,
-    pub no_video: bool,
-    pub no_window: bool,
-    pub audio_enabled: bool,
-    pub audio_buffer_ms: u16,
-    pub keyboard: HidMode,
-    pub mouse: HidMode,
-    pub mouse_bind: String,
-    pub shortcut_mod: String,
-    pub extra_args: Vec<String>,
+  pub binary: String,
+  pub serial: Option<String>,
+  pub no_video: bool,
+  pub no_window: bool,
+  pub audio_enabled: bool,
+  pub audio_buffer_ms: u16,
+  pub keyboard: HidMode,
+  pub mouse: HidMode,
+  pub mouse_bind: String,
+  pub shortcut_mod: String,
+  pub extra_args: Vec<String>,
 }
 
 impl Default for ScrcpyConfig {
-    fn default() -> Self {
-        Self {
-            binary: "scrcpy".to_string(),
-            serial: None,
-            no_video: true,
-            no_window: true,
-            audio_enabled: true,
-            audio_buffer_ms: 200,
-            keyboard: HidMode::Uhid,
-            mouse: HidMode::Uhid,
-            mouse_bind: "bhsn".to_string(),
-            shortcut_mod: "rctrl".to_string(),
-            extra_args: Vec::new(),
-        }
+  fn default() -> Self {
+    Self {
+      binary: "scrcpy".to_string(),
+      serial: None,
+      no_video: true,
+      no_window: true,
+      audio_enabled: true,
+      audio_buffer_ms: 200,
+      keyboard: HidMode::Uhid,
+      mouse: HidMode::Disabled,
+      mouse_bind: "bhsn".to_string(),
+      shortcut_mod: "rctrl".to_string(),
+      extra_args: Vec::new(),
     }
+  }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HidMode {
-    Disabled,
-    Sdk,
-    Uhid,
-    Aoa,
+  Disabled,
+  Sdk,
+  Uhid,
+  Aoa,
 }
 
 impl HidMode {
-    fn as_scrcpy_value(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::Sdk => "sdk",
-            Self::Uhid => "uhid",
-            Self::Aoa => "aoa",
-        }
+  fn as_scrcpy_value(self) -> &'static str {
+    match self {
+      Self::Disabled => "disabled",
+      Self::Sdk => "sdk",
+      Self::Uhid => "uhid",
+      Self::Aoa => "aoa",
     }
+  }
 }
 
 #[derive(Clone, Debug)]
 pub struct ScrcpyBackend {
-    config: ScrcpyConfig,
+  config: ScrcpyConfig,
 }
 
 impl ScrcpyBackend {
-    pub fn new(config: ScrcpyConfig) -> Self {
-        Self { config }
+  pub fn new(config: ScrcpyConfig) -> Self {
+    Self { config }
+  }
+
+  pub fn check(&self) -> Result<()> {
+    let status = Command::new(&self.config.binary)
+      .arg("--version")
+      .status()
+      .with_context(|| format!("failed to execute {}", self.config.binary))?;
+
+    ensure_success(status, "scrcpy --version")
+  }
+
+  pub fn spawn(&self) -> Result<Child> {
+    self
+      .command()
+      .spawn()
+      .with_context(|| format!("failed to execute {}", self.config.binary))
+  }
+
+  pub fn command_preview(&self) -> String {
+    shell_words(std::iter::once(OsString::from(&self.config.binary)).chain(self.args()))
+  }
+
+  fn command(&self) -> Command {
+    let mut command = Command::new(&self.config.binary);
+    command.args(self.args());
+    command
+  }
+
+  fn args(&self) -> Vec<OsString> {
+    let mut args = Vec::new();
+
+    if let Some(serial) = &self.config.serial {
+      args.push("--serial".into());
+      args.push(serial.into());
     }
 
-    pub fn check(&self) -> Result<()> {
-        let status = Command::new(&self.config.binary)
-            .arg("--version")
-            .status()
-            .with_context(|| format!("failed to execute {}", self.config.binary))?;
-
-        ensure_success(status, "scrcpy --version")
+    if self.config.no_video {
+      args.push("--no-video".into());
     }
 
-    pub fn spawn(&self) -> Result<Child> {
-        self.command()
-            .spawn()
-            .with_context(|| format!("failed to execute {}", self.config.binary))
+    if self.config.no_window {
+      args.push("--no-window".into());
     }
 
-    pub fn command_preview(&self) -> String {
-        shell_words(std::iter::once(OsString::from(&self.config.binary)).chain(self.args()))
+    if self.config.audio_enabled {
+      args.push(format!("--audio-buffer={}", self.config.audio_buffer_ms).into());
+    } else {
+      args.push("--no-audio".into());
     }
 
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.config.binary);
-        command.args(self.args());
-        command
+    args.push(format!("--keyboard={}", self.config.keyboard.as_scrcpy_value()).into());
+    args.push(format!("--mouse={}", self.config.mouse.as_scrcpy_value()).into());
+    if self.config.mouse != HidMode::Disabled {
+      args.push(format!("--mouse-bind={}", self.config.mouse_bind).into());
     }
+    args.push(format!("--shortcut-mod={}", self.config.shortcut_mod).into());
+    args.extend(self.config.extra_args.iter().map(OsString::from));
 
-    fn args(&self) -> Vec<OsString> {
-        let mut args = Vec::new();
-
-        if let Some(serial) = &self.config.serial {
-            args.push("--serial".into());
-            args.push(serial.into());
-        }
-
-        if self.config.no_video {
-            args.push("--no-video".into());
-        }
-
-        if self.config.no_window {
-            args.push("--no-window".into());
-        }
-
-        if self.config.audio_enabled {
-            args.push(format!("--audio-buffer={}", self.config.audio_buffer_ms).into());
-        } else {
-            args.push("--no-audio".into());
-        }
-
-        args.push(format!("--keyboard={}", self.config.keyboard.as_scrcpy_value()).into());
-        args.push(format!("--mouse={}", self.config.mouse.as_scrcpy_value()).into());
-        args.push(format!("--mouse-bind={}", self.config.mouse_bind).into());
-        args.push(format!("--shortcut-mod={}", self.config.shortcut_mod).into());
-        args.extend(self.config.extra_args.iter().map(OsString::from));
-
-        args
-    }
+    args
+  }
 }
 
 fn ensure_success(status: ExitStatus, label: &str) -> Result<()> {
-    if status.success() {
-        return Ok(());
-    }
+  if status.success() {
+    return Ok(());
+  }
 
-    bail!("{label} exited with {status}")
+  bail!("{label} exited with {status}")
 }
 
 fn shell_words(words: impl IntoIterator<Item = OsString>) -> String {
-    words
-        .into_iter()
-        .map(|word| shell_quote(&word.to_string_lossy()))
-        .collect::<Vec<_>>()
-        .join(" ")
+  words
+    .into_iter()
+    .map(|word| shell_quote(&word.to_string_lossy()))
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 fn shell_quote(value: &str) -> String {
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || "_+-=./:".contains(ch))
-    {
-        return value.to_string();
-    }
+  if value
+    .chars()
+    .all(|ch| ch.is_ascii_alphanumeric() || "_+-=./:".contains(ch))
+  {
+    return value.to_string();
+  }
 
-    format!("'{}'", value.replace('\'', "'\\''"))
+  format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+  use super::*;
 
-    #[test]
-    fn includes_audio_buffer_when_audio_is_enabled() {
-        let backend = ScrcpyBackend::new(ScrcpyConfig::default());
+  #[test]
+  fn includes_audio_buffer_when_audio_is_enabled() {
+    let backend = ScrcpyBackend::new(ScrcpyConfig::default());
 
-        assert!(backend.command_preview().contains("--audio-buffer=200"));
-        assert!(backend.command_preview().contains("--no-window"));
-    }
+    assert!(backend.command_preview().contains("--audio-buffer=200"));
+    assert!(backend.command_preview().contains("--no-window"));
+  }
 
-    #[test]
-    fn disables_audio_when_configured() {
-        let backend = ScrcpyBackend::new(ScrcpyConfig {
-            audio_enabled: false,
-            ..ScrcpyConfig::default()
-        });
+  #[test]
+  fn disables_audio_when_configured() {
+    let backend = ScrcpyBackend::new(ScrcpyConfig {
+      audio_enabled: false,
+      ..ScrcpyConfig::default()
+    });
 
-        assert!(backend.command_preview().contains("--no-audio"));
-        assert!(!backend.command_preview().contains("--audio-buffer"));
-    }
+    assert!(backend.command_preview().contains("--no-audio"));
+    assert!(!backend.command_preview().contains("--audio-buffer"));
+  }
 }

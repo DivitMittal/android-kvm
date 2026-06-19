@@ -51,7 +51,7 @@ cargo run -- run
 Default backend command:
 
 ```bash
-scrcpy --no-video --audio-buffer=200 --keyboard=uhid --mouse=uhid --mouse-bind=bhsn --shortcut-mod=rctrl
+scrcpy --no-video --no-window --audio-buffer=200 --keyboard=uhid --mouse=disabled --shortcut-mod=rctrl
 ```
 
 ## Configuration
@@ -82,7 +82,7 @@ no-window = true
 audio-enabled = true
 audio-buffer-ms = 200
 keyboard = "uhid"
-mouse = "uhid"
+mouse = "disabled"
 mouse-bind = "bhsn"
 shortcut-mod = "rctrl"
 extra-args = []
@@ -116,7 +116,7 @@ programs.android-kvm = {
       audio-enabled = true;
       audio-buffer-ms = 200;
       keyboard = "uhid";
-      mouse = "uhid";
+      mouse = "disabled";
       mouse-bind = "bhsn";
       shortcut-mod = "rctrl";
     };
