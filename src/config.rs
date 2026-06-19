@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::edge::Edge;
 use crate::scrcpy::ScrcpyConfig;
@@ -46,10 +47,12 @@ impl Default for Config {
 impl Config {
   pub fn load(path: Option<&Path>) -> Result<Self> {
     let Some(path) = path.map(PathBuf::from).or_else(default_config_path) else {
+      debug!("no config path found, using defaults");
       return Ok(Self::default());
     };
 
     if !path.exists() {
+      debug!(path = %path.display(), "config file not found, using defaults");
       return Ok(Self::default());
     }
 

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use keycode::{KeyMap, KeyMapping, KeyState, KeyboardState};
+use tracing::debug;
 
 use crate::scrcpy::shell_words;
 
@@ -223,18 +224,28 @@ impl ScrcpyServerControl {
   }
 
   pub fn stop(&mut self) -> Result<()> {
-    self.control.destroy_keyboard().ok();
-    self.control.destroy_mouse().ok();
-    self.process.kill().ok();
-    self.process.wait().ok();
-    adb_command(&self.adb, self.serial.as_deref())
+    if let Err(e) = self.control.destroy_keyboard() {
+      debug!(error = %e, "failed to send UHID keyboard destroy during stop");
+    }
+    if let Err(e) = self.control.destroy_mouse() {
+      debug!(error = %e, "failed to send UHID mouse destroy during stop");
+    }
+    if let Err(e) = self.process.kill() {
+      debug!(error = %e, "failed to kill scrcpy server process");
+    }
+    if let Err(e) = self.process.wait() {
+      debug!(error = %e, "failed to wait for scrcpy server process");
+    }
+    if let Err(e) = adb_command(&self.adb, self.serial.as_deref())
       .args([
         "reverse",
         "--remove",
         &format!("localabstract:{}", self.socket_name),
       ])
       .status()
-      .ok();
+    {
+      debug!(error = %e, "failed to remove adb reverse rule during stop");
+    }
     Ok(())
   }
 }
@@ -263,7 +274,7 @@ impl<W: Write> ScrcpyControl<W> {
   }
 
   fn create_hid(&mut self, id: u16, report_desc: &[u8]) -> io::Result<()> {
-    let mut msg = Vec::with_capacity(1 + 2 + 2 + 2 + 1 + 2 + MOUSE_REPORT_DESC.len());
+    let mut msg = Vec::with_capacity(1 + 2 + 2 + 2 + 1 + 2 + report_desc.len());
     msg.push(TYPE_UHID_CREATE);
     write_u16(&mut msg, id);
     write_u16(&mut msg, 0);

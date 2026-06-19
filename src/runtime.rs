@@ -425,8 +425,12 @@ impl AudioSession {
 
 impl Drop for AudioSession {
   fn drop(&mut self) {
-    self.child.kill().ok();
-    self.child.wait().ok();
+    if let Err(e) = self.child.kill() {
+      debug!(error = %e, "failed to kill audio scrcpy process");
+    }
+    if let Err(e) = self.child.wait() {
+      debug!(error = %e, "failed to wait for audio scrcpy process");
+    }
   }
 }
 
