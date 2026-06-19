@@ -28,8 +28,6 @@ in {
         scrcpy = {
           audio-enabled = true;
           audio-buffer-ms = 200;
-          keyboard = "uhid";
-          mouse = "uhid";
         };
       };
       description = "Configuration written to android-kvm/config.toml.";

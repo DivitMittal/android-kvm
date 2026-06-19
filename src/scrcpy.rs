@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail};
@@ -9,14 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct ScrcpyConfig {
   pub binary: String,
   pub serial: Option<String>,
-  pub no_video: bool,
-  pub no_window: bool,
   pub audio_enabled: bool,
   pub audio_buffer_ms: u16,
-  pub keyboard: HidMode,
-  pub mouse: HidMode,
-  pub mouse_bind: String,
-  pub shortcut_mod: String,
   pub extra_args: Vec<String>,
 }
 
@@ -25,35 +18,9 @@ impl Default for ScrcpyConfig {
     Self {
       binary: "scrcpy".to_string(),
       serial: None,
-      no_video: true,
-      no_window: true,
       audio_enabled: true,
       audio_buffer_ms: 200,
-      keyboard: HidMode::Uhid,
-      mouse: HidMode::Uhid,
-      mouse_bind: "bhsn".to_string(),
-      shortcut_mod: "rctrl".to_string(),
       extra_args: Vec::new(),
-    }
-  }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum HidMode {
-  Disabled,
-  Sdk,
-  Uhid,
-  Aoa,
-}
-
-impl HidMode {
-  fn as_scrcpy_value(self) -> &'static str {
-    match self {
-      Self::Disabled => "disabled",
-      Self::Sdk => "sdk",
-      Self::Uhid => "uhid",
-      Self::Aoa => "aoa",
     }
   }
 }
@@ -76,41 +43,6 @@ impl ScrcpyBackend {
 
     ensure_success(status, "scrcpy --version")
   }
-
-  pub fn command_preview(&self) -> String {
-    shell_words(std::iter::once(OsString::from(&self.config.binary)).chain(self.args()))
-  }
-
-  fn args(&self) -> Vec<OsString> {
-    let mut args = Vec::new();
-
-    if let Some(serial) = &self.config.serial {
-      args.push("--serial".into());
-      args.push(serial.into());
-    }
-
-    if self.config.no_video {
-      args.push("--no-video".into());
-    }
-
-    if self.config.no_window {
-      args.push("--no-window".into());
-    }
-
-    if self.config.audio_enabled {
-      args.push(format!("--audio-buffer={}", self.config.audio_buffer_ms).into());
-    } else {
-      args.push("--no-audio".into());
-    }
-
-    args.push(format!("--keyboard={}", self.config.keyboard.as_scrcpy_value()).into());
-    args.push(format!("--mouse={}", self.config.mouse.as_scrcpy_value()).into());
-    args.push(format!("--mouse-bind={}", self.config.mouse_bind).into());
-    args.push(format!("--shortcut-mod={}", self.config.shortcut_mod).into());
-    args.extend(self.config.extra_args.iter().map(OsString::from));
-
-    args
-  }
 }
 
 fn ensure_success(status: ExitStatus, label: &str) -> Result<()> {
@@ -121,10 +53,10 @@ fn ensure_success(status: ExitStatus, label: &str) -> Result<()> {
   bail!("{label} exited with {status}")
 }
 
-fn shell_words(words: impl IntoIterator<Item = OsString>) -> String {
+pub(crate) fn shell_words<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
   words
     .into_iter()
-    .map(|word| shell_quote(&word.to_string_lossy()))
+    .map(shell_quote)
     .collect::<Vec<_>>()
     .join(" ")
 }
@@ -145,21 +77,10 @@ mod tests {
   use super::*;
 
   #[test]
-  fn includes_audio_buffer_when_audio_is_enabled() {
-    let backend = ScrcpyBackend::new(ScrcpyConfig::default());
-
-    assert!(backend.command_preview().contains("--audio-buffer=200"));
-    assert!(backend.command_preview().contains("--no-window"));
-  }
-
-  #[test]
-  fn disables_audio_when_configured() {
-    let backend = ScrcpyBackend::new(ScrcpyConfig {
-      audio_enabled: false,
-      ..ScrcpyConfig::default()
-    });
-
-    assert!(backend.command_preview().contains("--no-audio"));
-    assert!(!backend.command_preview().contains("--audio-buffer"));
+  fn shell_words_quotes_arguments_with_spaces() {
+    assert_eq!(
+      shell_words(["scrcpy", "--serial", "device one"]),
+      "scrcpy --serial 'device one'",
+    );
   }
 }
