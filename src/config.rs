@@ -77,15 +77,15 @@ impl Config {
     if self.scrcpy.binary.is_empty() {
       bail!("scrcpy.binary must not be empty");
     }
-    if let Some(width) = self.android_width {
-      if width <= 0 {
-        bail!("android-width must be greater than 0 when set");
-      }
+    if let Some(width) = self.android_width
+      && width <= 0
+    {
+      bail!("android-width must be greater than 0 when set");
     }
-    if let Some(height) = self.android_height {
-      if height <= 0 {
-        bail!("android-height must be greater than 0 when set");
-      }
+    if let Some(height) = self.android_height
+      && height <= 0
+    {
+      bail!("android-height must be greater than 0 when set");
     }
     if self.android_width.is_some() != self.android_height.is_some() {
       bail!("android-width and android-height must be set together");

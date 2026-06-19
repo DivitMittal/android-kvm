@@ -12,6 +12,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::edge::Edge;
+use crate::scrcpy::shell_words;
 use crate::scrcpy_control::{MouseButton, ScrcpyServerControl};
 
 const ANDROID_CAPTURE_HANDLE: u64 = 1;
@@ -23,6 +24,23 @@ pub struct Runtime {
 impl Runtime {
   pub fn new(config: Config) -> Self {
     Self { config }
+  }
+
+  pub fn command_preview(config: &Config) -> String {
+    let mut commands = vec![ScrcpyServerControl::command_preview(
+      &config.adb_binary,
+      config.scrcpy.serial.as_deref(),
+      &config.scrcpy.binary,
+      config.scrcpy_server_path.as_deref(),
+      config.control_port,
+    )];
+
+    if let Some((binary, args)) = audio_command_parts(config) {
+      let words = std::iter::once(binary.as_str()).chain(args.iter().map(String::as_str));
+      commands.push(shell_words(words));
+    }
+
+    commands.join("\n")
   }
 
   pub fn run(&self) -> Result<()> {
@@ -50,7 +68,9 @@ impl Runtime {
     info!(edge = ?self.config.android_edge, "watching Android edge");
 
     self
-      .run_capture_loop(&mut capture, || std::future::ready(self.start_android_focus()))
+      .run_capture_loop(&mut capture, || {
+        std::future::ready(self.start_android_focus())
+      })
       .await
   }
 
@@ -66,7 +86,6 @@ impl Runtime {
     StartFuture: Future<Output = Result<S>>,
     CaptureError: std::error::Error + Send + Sync + 'static,
   {
-
     let _runtime_audio = if self.config.audio_always_on {
       self.start_audio()?.map(AudioSession::new)
     } else {
@@ -112,10 +131,10 @@ impl Runtime {
                     pending_activation = None;
                     active = Some(start_android_focus().await?);
                     self.log_focus_change(FocusTarget::Android);
-                    if let Some(session) = active.as_mut() {
-                      if self.handle_pointer_event(session, pointer_event)? {
-                        self.release_to_host(&mut active, capture).await?;
-                      }
+                    if let Some(session) = active.as_mut()
+                      && self.handle_pointer_event(session, pointer_event)?
+                    {
+                      self.release_to_host(&mut active, capture).await?;
                     }
                   }
                   SwipeActivationDecision::Release => {
@@ -278,7 +297,10 @@ impl Runtime {
     {
       VirtualAndroidBounds { width, height }
     } else {
-      match discover_android_bounds(&self.config.adb_binary, self.config.scrcpy.serial.as_deref()) {
+      match discover_android_bounds(
+        &self.config.adb_binary,
+        self.config.scrcpy.serial.as_deref(),
+      ) {
         Ok(bounds) => bounds,
         Err(error) => {
           warn!(
@@ -305,7 +327,9 @@ impl Runtime {
   }
 }
 
-trait CaptureRuntime<E>: futures_util::Stream<Item = std::result::Result<(u64, CaptureEvent), E>> {
+trait CaptureRuntime<E>:
+  futures_util::Stream<Item = std::result::Result<(u64, CaptureEvent), E>>
+{
   fn release_capture(&mut self) -> impl Future<Output = Result<()>> + '_;
 }
 
@@ -563,7 +587,8 @@ fn discover_android_bounds(adb: &str, serial: Option<&str>) -> Result<VirtualAnd
   if !output.status.success() {
     bail!("adb shell wm size exited with {}", output.status);
   }
-  let stdout = String::from_utf8(output.stdout).context("adb shell wm size output was not UTF-8")?;
+  let stdout =
+    String::from_utf8(output.stdout).context("adb shell wm size output was not UTF-8")?;
   parse_wm_size(&stdout).context("failed to parse adb shell wm size output")
 }
 
@@ -677,6 +702,32 @@ mod tests {
         "--audio-buffer=250".to_string(),
       ]
     );
+  }
+
+  #[test]
+  fn dry_run_preview_matches_direct_control_runtime_commands() {
+    let config = Config {
+      adb_binary: "adb-test".to_string(),
+      scrcpy: crate::scrcpy::ScrcpyConfig {
+        binary: "scrcpy-test".to_string(),
+        serial: Some("device-1".to_string()),
+        audio_buffer_ms: 250,
+        ..crate::scrcpy::ScrcpyConfig::default()
+      },
+      ..Config::default()
+    };
+
+    let preview = Runtime::command_preview(&config);
+
+    assert!(preview.contains("adb-test -s device-1 push '<scrcpy-server-from-scrcpy>'"));
+    assert!(preview.contains("adb-test -s device-1 reverse 'localabstract:scrcpy_<random-scid>'"));
+    assert!(preview.contains("adb-test -s device-1 shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server"));
+    assert!(preview.contains("video=false audio=false control=true"));
+    assert!(preview.contains(
+      "scrcpy-test --serial device-1 --no-video --no-window --no-control --audio-buffer=250"
+    ));
+    assert!(!preview.contains("--keyboard=uhid"));
+    assert!(!preview.contains("--mouse=uhid"));
   }
 
   #[test]
@@ -986,10 +1037,7 @@ mod tests {
   impl futures_util::Stream for FakeCapture {
     type Item = io::Result<(u64, CaptureEvent)>;
 
-    fn poll_next(
-      self: Pin<&mut Self>,
-      _cx: &mut TaskContext<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
       Poll::Ready(self.get_mut().events.pop_front())
     }
   }

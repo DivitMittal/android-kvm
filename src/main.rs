@@ -1,5 +1,4 @@
 mod config;
-#[allow(dead_code)]
 mod edge;
 mod runtime;
 mod scrcpy;
@@ -57,9 +56,8 @@ fn main() -> Result<()> {
 
   match cli.command {
     Command::Run { dry_run } => {
-      let backend = ScrcpyBackend::new(config.scrcpy.clone());
       if dry_run {
-        println!("{}", backend.command_preview());
+        println!("{}", Runtime::command_preview(&config));
         return Ok(());
       }
 
