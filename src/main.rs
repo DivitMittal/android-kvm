@@ -1,9 +1,9 @@
-mod android;
 mod config;
 #[allow(dead_code)]
 mod edge;
 mod runtime;
 mod scrcpy;
+mod scrcpy_control;
 
 use std::path::PathBuf;
 
@@ -17,51 +17,51 @@ use crate::scrcpy::ScrcpyBackend;
 #[derive(Debug, Parser)]
 #[command(version, about = "USB Android software KVM, backed by scrcpy")]
 struct Cli {
-    #[arg(short, long, value_name = "PATH")]
-    config: Option<PathBuf>,
+  #[arg(short, long, value_name = "PATH")]
+  config: Option<PathBuf>,
 
-    #[command(subcommand)]
-    command: Command,
+  #[command(subcommand)]
+  command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Start the configured scrcpy backend.
-    Run {
-        /// Print the scrcpy command without executing it.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Print the resolved configuration.
-    PrintConfig,
-    /// Validate dependencies and configuration.
-    Check,
+  /// Start the configured scrcpy backend.
+  Run {
+    /// Print the scrcpy command without executing it.
+    #[arg(long)]
+    dry_run: bool,
+  },
+  /// Print the resolved configuration.
+  PrintConfig,
+  /// Validate dependencies and configuration.
+  Check,
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let config = Config::load(cli.config.as_deref())?;
+  let cli = Cli::parse();
+  let config = Config::load(cli.config.as_deref())?;
 
-    match cli.command {
-        Command::Run { dry_run } => {
-            let backend = ScrcpyBackend::new(config.scrcpy.clone());
-            if dry_run {
-                println!("{}", backend.command_preview());
-                return Ok(());
-            }
+  match cli.command {
+    Command::Run { dry_run } => {
+      let backend = ScrcpyBackend::new(config.scrcpy.clone());
+      if dry_run {
+        println!("{}", backend.command_preview());
+        return Ok(());
+      }
 
-            Runtime::new(config)
-                .run()
-                .context("android-kvm runtime failed")
-        }
-        Command::PrintConfig => {
-            println!("{}", toml::to_string_pretty(&config)?);
-            Ok(())
-        }
-        Command::Check => {
-            ScrcpyBackend::new(config.scrcpy).check()?;
-            println!("ok");
-            Ok(())
-        }
+      Runtime::new(config)
+        .run()
+        .context("android-kvm runtime failed")
     }
+    Command::PrintConfig => {
+      println!("{}", toml::to_string_pretty(&config)?);
+      Ok(())
+    }
+    Command::Check => {
+      ScrcpyBackend::new(config.scrcpy).check()?;
+      println!("ok");
+      Ok(())
+    }
+  }
 }

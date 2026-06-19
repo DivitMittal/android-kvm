@@ -5,23 +5,19 @@ use futures_util::StreamExt;
 use input_capture::{Backend, CaptureEvent, InputCapture, Position};
 use input_event::{Event, PointerEvent};
 
-use crate::android::{AndroidBounds, AndroidInput};
 use crate::config::Config;
-use crate::edge::{Edge, Pointer};
-use crate::scrcpy::ScrcpyBackend;
+use crate::edge::Edge;
+use crate::scrcpy_control::ScrcpyServerControl;
 
 const ANDROID_CAPTURE_HANDLE: u64 = 1;
 
 pub struct Runtime {
   config: Config,
-  backend: ScrcpyBackend,
 }
 
 impl Runtime {
   pub fn new(config: Config) -> Self {
-    let backend = ScrcpyBackend::new(config.scrcpy.clone());
-
-    Self { config, backend }
+    Self { config }
   }
 
   pub fn run(&self) -> Result<()> {
@@ -98,20 +94,15 @@ impl Runtime {
   }
 
   fn start_android_focus(&self) -> Result<ActiveSession> {
-    let child = self
-      .backend
-      .spawn()
-      .context("failed to start scrcpy focus backend")?;
-    let mut android = self.android_input()?;
-    let pointer = android_entry_pointer(self.config.android_edge, android.bounds());
+    let control = ScrcpyServerControl::start(
+      &self.config.adb_binary,
+      self.config.scrcpy.serial.as_deref(),
+      &self.config.scrcpy.binary,
+      self.config.scrcpy_server_path.as_deref(),
+      self.config.control_port,
+    )?;
 
-    android.move_pointer(pointer)?;
-
-    Ok(ActiveSession {
-      child,
-      android,
-      pointer,
-    })
+    Ok(ActiveSession { control })
   }
 
   fn stop_android_focus(&self, active: &mut Option<ActiveSession>) -> Result<()> {
@@ -119,15 +110,7 @@ impl Runtime {
       return Ok(());
     };
 
-    session.android.stop()?;
-    session
-      .child
-      .kill()
-      .context("failed to stop scrcpy focus backend")?;
-    session
-      .child
-      .wait()
-      .context("failed to wait for scrcpy focus backend")?;
+    session.control.stop()?;
     Ok(())
   }
 
@@ -138,18 +121,9 @@ impl Runtime {
   ) -> Result<bool> {
     match pointer_event {
       PointerEvent::Motion { dx, dy, .. } => {
-        session.pointer.x += (dx as f32 * self.config.pointer_scale).round() as i32;
-        session.pointer.y += (dy as f32 * self.config.pointer_scale).round() as i32;
-
-        if should_release(
-          self.config.android_edge,
-          session.pointer,
-          session.android.bounds(),
-        ) {
-          return Ok(true);
-        }
-
-        session.android.move_pointer(session.pointer)?;
+        let dx = (dx as f32 * self.config.pointer_scale).round() as i32;
+        let dy = (dy as f32 * self.config.pointer_scale).round() as i32;
+        session.control.move_mouse(dx, dy)?;
       }
       PointerEvent::Button { .. }
       | PointerEvent::Axis { .. }
@@ -160,28 +134,10 @@ impl Runtime {
 
     Ok(false)
   }
-
-  fn android_input(&self) -> Result<AndroidInput> {
-    let bounds = match (self.config.android_width, self.config.android_height) {
-      (Some(width), Some(height)) => AndroidBounds { width, height },
-      _ => AndroidInput::detect_bounds(
-        &self.config.adb_binary,
-        self.config.scrcpy.serial.as_deref(),
-      )?,
-    };
-
-    AndroidInput::new(
-      self.config.adb_binary.clone(),
-      self.config.scrcpy.serial.clone(),
-      bounds,
-    )
-  }
 }
 
 struct ActiveSession {
-  child: std::process::Child,
-  android: AndroidInput,
-  pointer: Pointer,
+  control: ScrcpyServerControl,
 }
 
 fn default_capture_backend() -> Option<Backend> {
@@ -210,36 +166,6 @@ fn to_capture_position(edge: Edge) -> Position {
   }
 }
 
-fn android_entry_pointer(edge: Edge, android: AndroidBounds) -> Pointer {
-  match edge {
-    Edge::Left => Pointer {
-      x: android.width.saturating_sub(1),
-      y: android.height / 2,
-    },
-    Edge::Right => Pointer {
-      x: 0,
-      y: android.height / 2,
-    },
-    Edge::Top => Pointer {
-      x: android.width / 2,
-      y: android.height.saturating_sub(1),
-    },
-    Edge::Bottom => Pointer {
-      x: android.width / 2,
-      y: 0,
-    },
-  }
-}
-
-fn should_release(edge: Edge, pointer: Pointer, android: AndroidBounds) -> bool {
-  match edge {
-    Edge::Left => pointer.x >= android.width,
-    Edge::Right => pointer.x < 0,
-    Edge::Top => pointer.y >= android.height,
-    Edge::Bottom => pointer.y < 0,
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -250,31 +176,5 @@ mod tests {
     assert_eq!(to_capture_position(Edge::Right), Position::Right);
     assert_eq!(to_capture_position(Edge::Top), Position::Top);
     assert_eq!(to_capture_position(Edge::Bottom), Position::Bottom);
-  }
-
-  #[test]
-  fn right_edge_starts_on_android_left_side() {
-    assert_eq!(
-      android_entry_pointer(
-        Edge::Right,
-        AndroidBounds {
-          width: 1080,
-          height: 2400,
-        },
-      ),
-      Pointer { x: 0, y: 1200 },
-    );
-  }
-
-  #[test]
-  fn right_edge_releases_when_moving_past_android_left_side() {
-    assert!(should_release(
-      Edge::Right,
-      Pointer { x: -1, y: 1200 },
-      AndroidBounds {
-        width: 1080,
-        height: 2400,
-      },
-    ));
   }
 }

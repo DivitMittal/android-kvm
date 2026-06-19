@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -77,21 +77,8 @@ impl ScrcpyBackend {
     ensure_success(status, "scrcpy --version")
   }
 
-  pub fn spawn(&self) -> Result<Child> {
-    self
-      .command()
-      .spawn()
-      .with_context(|| format!("failed to execute {}", self.config.binary))
-  }
-
   pub fn command_preview(&self) -> String {
     shell_words(std::iter::once(OsString::from(&self.config.binary)).chain(self.args()))
-  }
-
-  fn command(&self) -> Command {
-    let mut command = Command::new(&self.config.binary);
-    command.args(self.args());
-    command
   }
 
   fn args(&self) -> Vec<OsString> {
