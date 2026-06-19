@@ -132,6 +132,20 @@ impl ScrcpyServerControl {
       .context("failed to send UHID mouse motion")
   }
 
+  pub fn set_mouse_button(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
+    self
+      .control
+      .set_mouse_button(button, pressed)
+      .context("failed to send UHID mouse button")
+  }
+
+  pub fn scroll_mouse(&mut self, hscroll: i32, vscroll: i32) -> Result<()> {
+    self
+      .control
+      .scroll_mouse(hscroll, vscroll)
+      .context("failed to send UHID mouse scroll")
+  }
+
   pub fn stop(&mut self) -> Result<()> {
     self.control.destroy_mouse().ok();
     self.process.kill().ok();
@@ -178,6 +192,23 @@ impl<W: Write> ScrcpyControl<W> {
     Ok(())
   }
 
+  pub fn set_mouse_button(&mut self, button: MouseButton, pressed: bool) -> io::Result<()> {
+    if pressed {
+      self.buttons |= button.bit();
+    } else {
+      self.buttons &= !button.bit();
+    }
+
+    self.input([self.buttons, 0, 0, 0, 0])
+  }
+
+  pub fn scroll_mouse(&mut self, hscroll: i32, vscroll: i32) -> io::Result<()> {
+    for (hscroll, vscroll) in split_motion(hscroll, vscroll) {
+      self.input([self.buttons, 0, 0, vscroll as u8, hscroll as u8])?;
+    }
+    Ok(())
+  }
+
   pub fn destroy_mouse(&mut self) -> io::Result<()> {
     let mut msg = Vec::with_capacity(3);
     msg.push(TYPE_UHID_DESTROY);
@@ -192,6 +223,27 @@ impl<W: Write> ScrcpyControl<W> {
     write_u16(&mut msg, data.len() as u16);
     msg.extend_from_slice(&data);
     self.writer.write_all(&msg)
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseButton {
+  Left,
+  Right,
+  Middle,
+  Back,
+  Forward,
+}
+
+impl MouseButton {
+  fn bit(self) -> u8 {
+    match self {
+      Self::Left => 1 << 0,
+      Self::Right => 1 << 1,
+      Self::Middle => 1 << 2,
+      Self::Back => 1 << 3,
+      Self::Forward => 1 << 4,
+    }
   }
 }
 
@@ -317,6 +369,19 @@ mod tests {
         0,
         0
       ]
+    );
+  }
+
+  #[test]
+  fn serializes_mouse_button_message() {
+    let mut out = Vec::new();
+    ScrcpyControl::new(&mut out)
+      .set_mouse_button(MouseButton::Left, true)
+      .unwrap();
+
+    assert_eq!(
+      out,
+      vec![TYPE_UHID_INPUT, 0, HID_ID_MOUSE as u8, 0, 5, 1, 0, 0, 0, 0]
     );
   }
 

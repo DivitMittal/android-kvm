@@ -3,11 +3,14 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use input_capture::{Backend, CaptureEvent, InputCapture, Position};
-use input_event::{Event, PointerEvent};
+use input_event::{
+  BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Event, KeyboardEvent, PointerEvent,
+  scancode,
+};
 
 use crate::config::Config;
 use crate::edge::Edge;
-use crate::scrcpy_control::ScrcpyServerControl;
+use crate::scrcpy_control::{MouseButton, ScrcpyServerControl};
 
 const ANDROID_CAPTURE_HANDLE: u64 = 1;
 
@@ -75,8 +78,17 @@ impl Runtime {
                 }
               }
             }
-            CaptureEvent::Input(Event::Keyboard(_)) => {
-              // Keyboard forwarding needs a scrcpy-control or ADB key map backend.
+            CaptureEvent::Input(Event::Keyboard(keyboard_event)) => {
+              if let Some(session) = active.as_mut() {
+                if self.handle_keyboard_event(session, keyboard_event)? {
+                  self.stop_android_focus(&mut active)?;
+                  capture
+                    .release()
+                    .await
+                    .context("failed to release capture")?;
+                  println!("host focus active");
+                }
+              }
             }
             CaptureEvent::Begin => {}
           }
@@ -125,13 +137,45 @@ impl Runtime {
         let dy = (dy as f32 * self.config.pointer_scale).round() as i32;
         session.control.move_mouse(dx, dy)?;
       }
-      PointerEvent::Button { .. }
-      | PointerEvent::Axis { .. }
-      | PointerEvent::AxisDiscrete120 { .. } => {
-        // TODO: forward buttons/scroll through the Android input backend.
+      PointerEvent::Button { button, state, .. } => {
+        if let Some(button) = to_mouse_button(button) {
+          session.control.set_mouse_button(button, state != 0)?;
+        }
+      }
+      PointerEvent::Axis { axis, value, .. } => {
+        let amount = value.round() as i32;
+        match axis {
+          0 => session.control.scroll_mouse(0, amount)?,
+          1 => session.control.scroll_mouse(amount, 0)?,
+          _ => {}
+        }
+      }
+      PointerEvent::AxisDiscrete120 { axis, value } => {
+        let amount = value / 120;
+        match axis {
+          0 => session.control.scroll_mouse(0, amount)?,
+          1 => session.control.scroll_mouse(amount, 0)?,
+          _ => {}
+        }
       }
     }
 
+    Ok(false)
+  }
+
+  fn handle_keyboard_event(
+    &self,
+    _session: &mut ActiveSession,
+    keyboard_event: KeyboardEvent,
+  ) -> Result<bool> {
+    if let KeyboardEvent::Key { key, state, .. } = keyboard_event {
+      if state != 0 && key == scancode::Linux::KeyEsc as u32 {
+        return Ok(true);
+      }
+    }
+
+    // Keyboard forwarding needs HID keyboard report generation. The event is still
+    // consumed by the capture backend while Android focus is active.
     Ok(false)
   }
 }
@@ -166,6 +210,17 @@ fn to_capture_position(edge: Edge) -> Position {
   }
 }
 
+fn to_mouse_button(button: u32) -> Option<MouseButton> {
+  match button {
+    BTN_LEFT => Some(MouseButton::Left),
+    BTN_RIGHT => Some(MouseButton::Right),
+    BTN_MIDDLE => Some(MouseButton::Middle),
+    BTN_BACK => Some(MouseButton::Back),
+    BTN_FORWARD => Some(MouseButton::Forward),
+    _ => None,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -176,5 +231,12 @@ mod tests {
     assert_eq!(to_capture_position(Edge::Right), Position::Right);
     assert_eq!(to_capture_position(Edge::Top), Position::Top);
     assert_eq!(to_capture_position(Edge::Bottom), Position::Bottom);
+  }
+
+  #[test]
+  fn maps_pointer_buttons_to_hid_buttons() {
+    assert_eq!(to_mouse_button(BTN_LEFT), Some(MouseButton::Left));
+    assert_eq!(to_mouse_button(BTN_RIGHT), Some(MouseButton::Right));
+    assert_eq!(to_mouse_button(BTN_MIDDLE), Some(MouseButton::Middle));
   }
 }
