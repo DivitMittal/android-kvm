@@ -1,13 +1,14 @@
+use std::future::Future;
 use std::process::{Child, Command};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use input_capture::{CaptureEvent, InputCapture, Position};
 use input_event::{
   BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Event, KeyboardEvent, PointerEvent,
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::edge::Edge;
@@ -48,6 +49,24 @@ impl Runtime {
 
     info!(edge = ?self.config.android_edge, "watching Android edge");
 
+    self
+      .run_capture_loop(&mut capture, || std::future::ready(self.start_android_focus()))
+      .await
+  }
+
+  async fn run_capture_loop<C, S, Start, StartFuture, CaptureError>(
+    &self,
+    capture: &mut C,
+    mut start_android_focus: Start,
+  ) -> Result<()>
+  where
+    C: CaptureRuntime<CaptureError> + Unpin,
+    S: FocusSession,
+    Start: FnMut() -> StartFuture,
+    StartFuture: Future<Output = Result<S>>,
+    CaptureError: std::error::Error + Send + Sync + 'static,
+  {
+
     let _runtime_audio = if self.config.audio_always_on {
       self.start_audio()?.map(AudioSession::new)
     } else {
@@ -85,36 +104,23 @@ impl Runtime {
             CaptureEvent::Input(Event::Pointer(pointer_event)) => {
               if let Some(session) = active.as_mut() {
                 if self.handle_pointer_event(session, pointer_event)? {
-                  self.stop_android_focus(&mut active)?;
-                  capture
-                    .release()
-                    .await
-                    .context("failed to release capture")?;
-                  self.log_focus_change(FocusTarget::Host);
+                  self.release_to_host(&mut active, capture).await?;
                 }
               } else if let Some(activation) = pending_activation.as_mut() {
                 match activation.update(pointer_event) {
                   SwipeActivationDecision::Activate => {
                     pending_activation = None;
-                    active = Some(self.start_android_focus()?);
+                    active = Some(start_android_focus().await?);
                     self.log_focus_change(FocusTarget::Android);
                     if let Some(session) = active.as_mut() {
                       if self.handle_pointer_event(session, pointer_event)? {
-                        self.stop_android_focus(&mut active)?;
-                        capture
-                          .release()
-                          .await
-                          .context("failed to release capture")?;
-                        self.log_focus_change(FocusTarget::Host);
+                        self.release_to_host(&mut active, capture).await?;
                       }
                     }
                   }
                   SwipeActivationDecision::Release => {
                     pending_activation = None;
-                    capture
-                      .release()
-                      .await
-                      .context("failed to release capture")?;
+                    capture.release_capture().await?;
                     self.log_focus_change(FocusTarget::Host);
                   }
                   SwipeActivationDecision::Wait => {}
@@ -123,14 +129,7 @@ impl Runtime {
             }
             CaptureEvent::Input(Event::Keyboard(keyboard_event)) => {
               if let Some(session) = active.as_mut() {
-                if self.handle_keyboard_event(session, keyboard_event)? {
-                  self.stop_android_focus(&mut active)?;
-                  capture
-                    .release()
-                    .await
-                    .context("failed to release capture")?;
-                  self.log_focus_change(FocusTarget::Host);
-                }
+                self.handle_keyboard_event(session, keyboard_event)?;
               }
             }
             CaptureEvent::Begin => {}
@@ -170,8 +169,28 @@ impl Runtime {
     Ok(ActiveSession {
       audio,
       control,
-      pointer: VirtualAndroidPointer::new(&self.config),
+      pointer: VirtualAndroidPointer::new(
+        self.config.android_edge,
+        self.android_bounds()?,
+        self.config.release_pixels,
+      ),
     })
+  }
+
+  async fn release_to_host<C, S, CaptureError>(
+    &self,
+    active: &mut Option<S>,
+    capture: &mut C,
+  ) -> Result<()>
+  where
+    C: CaptureRuntime<CaptureError>,
+    S: FocusSession,
+    CaptureError: std::error::Error + Send + Sync + 'static,
+  {
+    self.stop_android_focus(active)?;
+    capture.release_capture().await?;
+    self.log_focus_change(FocusTarget::Host);
+    Ok(())
   }
 
   fn start_audio(&self) -> Result<Option<Child>> {
@@ -189,7 +208,7 @@ impl Runtime {
       .with_context(|| format!("failed to start audio with {binary}"))
   }
 
-  fn stop_android_focus(&self, active: &mut Option<ActiveSession>) -> Result<()> {
+  fn stop_android_focus<S: FocusSession>(&self, active: &mut Option<S>) -> Result<()> {
     let Some(mut session) = active.take() else {
       return Ok(());
     };
@@ -201,38 +220,38 @@ impl Runtime {
     info!(focus = focus.as_str(), "focus changed");
   }
 
-  fn handle_pointer_event(
+  fn handle_pointer_event<S: FocusSession>(
     &self,
-    session: &mut ActiveSession,
+    session: &mut S,
     pointer_event: PointerEvent,
   ) -> Result<bool> {
     match pointer_event {
       PointerEvent::Motion { dx, dy, .. } => {
         let dx = (dx as f32 * self.config.pointer_scale).round() as i32;
         let dy = (dy as f32 * self.config.pointer_scale).round() as i32;
-        if session.pointer.update(dx, dy) {
+        if session.pointer_mut().update(dx, dy) {
           return Ok(true);
         }
-        session.control.move_mouse(dx, dy)?;
+        session.move_mouse(dx, dy)?;
       }
       PointerEvent::Button { button, state, .. } => {
         if let Some(button) = to_mouse_button(button) {
-          session.control.set_mouse_button(button, state != 0)?;
+          session.set_mouse_button(button, state != 0)?;
         }
       }
       PointerEvent::Axis { axis, value, .. } => {
         let amount = value.round() as i32;
         match axis {
-          0 => session.control.scroll_mouse(0, amount)?,
-          1 => session.control.scroll_mouse(amount, 0)?,
+          0 => session.scroll_mouse(0, amount)?,
+          1 => session.scroll_mouse(amount, 0)?,
           _ => {}
         }
       }
       PointerEvent::AxisDiscrete120 { axis, value } => {
         let amount = value / 120;
         match axis {
-          0 => session.control.scroll_mouse(0, amount)?,
-          1 => session.control.scroll_mouse(amount, 0)?,
+          0 => session.scroll_mouse(0, amount)?,
+          1 => session.scroll_mouse(amount, 0)?,
           _ => {}
         }
       }
@@ -241,17 +260,73 @@ impl Runtime {
     Ok(false)
   }
 
-  fn handle_keyboard_event(
+  fn handle_keyboard_event<S: FocusSession>(
     &self,
-    session: &mut ActiveSession,
+    session: &mut S,
     keyboard_event: KeyboardEvent,
-  ) -> Result<bool> {
+  ) -> Result<()> {
     if let KeyboardEvent::Key { key, state, .. } = keyboard_event {
-      session.control.set_key(key, state != 0)?;
+      session.set_key(key, state != 0)?;
     }
 
-    Ok(false)
+    Ok(())
   }
+
+  fn android_bounds(&self) -> Result<VirtualAndroidBounds> {
+    let bounds = if let (Some(width), Some(height)) =
+      (self.config.android_width, self.config.android_height)
+    {
+      VirtualAndroidBounds { width, height }
+    } else {
+      match discover_android_bounds(&self.config.adb_binary, self.config.scrcpy.serial.as_deref()) {
+        Ok(bounds) => bounds,
+        Err(error) => {
+          warn!(
+            error = %error,
+            width = DEFAULT_ANDROID_WIDTH,
+            height = DEFAULT_ANDROID_HEIGHT,
+            "failed to discover Android display size; using fallback virtual bounds",
+          );
+          VirtualAndroidBounds {
+            width: DEFAULT_ANDROID_WIDTH,
+            height: DEFAULT_ANDROID_HEIGHT,
+          }
+        }
+      }
+    };
+
+    let release_pixels = i32::try_from(self.config.release_pixels)
+      .context("release-pixels is too large for Android geometry")?;
+    if release_pixels >= bounds.width || release_pixels >= bounds.height {
+      bail!("release-pixels must be smaller than the Android display dimensions");
+    }
+
+    Ok(bounds)
+  }
+}
+
+trait CaptureRuntime<E>: futures_util::Stream<Item = std::result::Result<(u64, CaptureEvent), E>> {
+  fn release_capture(&mut self) -> impl Future<Output = Result<()>> + '_;
+}
+
+impl CaptureRuntime<input_capture::CaptureError> for InputCapture {
+  async fn release_capture(&mut self) -> Result<()> {
+    self.release().await.context("failed to release capture")
+  }
+}
+
+trait FocusSession {
+  fn pointer_mut(&mut self) -> &mut VirtualAndroidPointer;
+
+  fn move_mouse(&mut self, dx: i32, dy: i32) -> Result<()>;
+
+  fn set_mouse_button(&mut self, button: MouseButton, pressed: bool) -> Result<()>;
+
+  fn scroll_mouse(&mut self, hscroll: i32, vscroll: i32) -> Result<()>;
+
+  fn set_key(&mut self, linux_key: u32, pressed: bool) -> Result<()>;
+
+  fn stop(&mut self) -> Result<()>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -279,6 +354,32 @@ impl ActiveSession {
   fn stop(&mut self) -> Result<()> {
     self.audio.take();
     self.control.stop()
+  }
+}
+
+impl FocusSession for ActiveSession {
+  fn pointer_mut(&mut self) -> &mut VirtualAndroidPointer {
+    &mut self.pointer
+  }
+
+  fn move_mouse(&mut self, dx: i32, dy: i32) -> Result<()> {
+    self.control.move_mouse(dx, dy)
+  }
+
+  fn set_mouse_button(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
+    self.control.set_mouse_button(button, pressed)
+  }
+
+  fn scroll_mouse(&mut self, hscroll: i32, vscroll: i32) -> Result<()> {
+    self.control.scroll_mouse(hscroll, vscroll)
+  }
+
+  fn set_key(&mut self, linux_key: u32, pressed: bool) -> Result<()> {
+    self.control.set_key(linux_key, pressed)
+  }
+
+  fn stop(&mut self) -> Result<()> {
+    ActiveSession::stop(self)
   }
 }
 
@@ -392,6 +493,9 @@ struct VirtualAndroidBounds {
   height: i32,
 }
 
+const DEFAULT_ANDROID_WIDTH: i32 = 1080;
+const DEFAULT_ANDROID_HEIGHT: i32 = 2400;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct VirtualAndroidPointer {
   edge: Edge,
@@ -403,16 +507,12 @@ struct VirtualAndroidPointer {
 }
 
 impl VirtualAndroidPointer {
-  fn new(config: &Config) -> Self {
-    let bounds = VirtualAndroidBounds {
-      width: config.android_width.unwrap_or(1080).max(1),
-      height: config.android_height.unwrap_or(2400).max(1),
-    };
-    let release_pixels = (config.release_pixels as i32).max(1);
-    let (x, y) = entry_position(config.android_edge, bounds, release_pixels);
+  fn new(edge: Edge, bounds: VirtualAndroidBounds, release_pixels: u32) -> Self {
+    let release_pixels = release_pixels as i32;
+    let (x, y) = entry_position(edge, bounds, release_pixels);
 
     Self {
-      edge: config.android_edge,
+      edge,
       bounds,
       release_pixels,
       x,
@@ -449,6 +549,34 @@ impl VirtualAndroidPointer {
       Edge::Bottom => self.y < self.release_pixels,
     }
   }
+}
+
+fn discover_android_bounds(adb: &str, serial: Option<&str>) -> Result<VirtualAndroidBounds> {
+  let mut command = Command::new(adb);
+  if let Some(serial) = serial {
+    command.args(["-s", serial]);
+  }
+  let output = command
+    .args(["shell", "wm", "size"])
+    .output()
+    .with_context(|| format!("failed to execute {adb} shell wm size"))?;
+  if !output.status.success() {
+    bail!("adb shell wm size exited with {}", output.status);
+  }
+  let stdout = String::from_utf8(output.stdout).context("adb shell wm size output was not UTF-8")?;
+  parse_wm_size(&stdout).context("failed to parse adb shell wm size output")
+}
+
+fn parse_wm_size(output: &str) -> Option<VirtualAndroidBounds> {
+  output.lines().find_map(|line| {
+    let size = line.strip_prefix("Physical size: ")?;
+    let (width, height) = size.split_once('x')?;
+    let bounds = VirtualAndroidBounds {
+      width: width.parse().ok()?,
+      height: height.parse().ok()?,
+    };
+    (bounds.width > 0 && bounds.height > 0).then_some(bounds)
+  })
 }
 
 fn entry_position(edge: Edge, bounds: VirtualAndroidBounds, release_pixels: i32) -> (i32, i32) {
@@ -504,6 +632,13 @@ fn to_mouse_button(button: u32) -> Option<MouseButton> {
 
 #[cfg(test)]
 mod tests {
+  use std::cell::{Cell, RefCell};
+  use std::collections::VecDeque;
+  use std::io;
+  use std::pin::Pin;
+  use std::rc::Rc;
+  use std::task::{Context as TaskContext, Poll};
+
   use super::*;
 
   #[test]
@@ -658,7 +793,14 @@ mod tests {
       release_pixels: 4,
       ..Config::default()
     };
-    let mut pointer = VirtualAndroidPointer::new(&config);
+    let mut pointer = VirtualAndroidPointer::new(
+      config.android_edge,
+      VirtualAndroidBounds {
+        width: config.android_width.unwrap(),
+        height: config.android_height.unwrap(),
+      },
+      config.release_pixels,
+    );
 
     assert!(!pointer.update(20, 0));
     assert!(!pointer.update(-19, 0));
@@ -674,7 +816,14 @@ mod tests {
       release_pixels: 4,
       ..Config::default()
     };
-    let mut pointer = VirtualAndroidPointer::new(&config);
+    let mut pointer = VirtualAndroidPointer::new(
+      config.android_edge,
+      VirtualAndroidBounds {
+        width: config.android_width.unwrap(),
+        height: config.android_height.unwrap(),
+      },
+      config.release_pixels,
+    );
 
     assert!(!pointer.update(-20, 0));
     assert!(!pointer.update(19, 0));
@@ -690,7 +839,14 @@ mod tests {
       release_pixels: 4,
       ..Config::default()
     };
-    let mut pointer = VirtualAndroidPointer::new(&config);
+    let mut pointer = VirtualAndroidPointer::new(
+      config.android_edge,
+      VirtualAndroidBounds {
+        width: config.android_width.unwrap(),
+        height: config.android_height.unwrap(),
+      },
+      config.release_pixels,
+    );
 
     assert!(!pointer.update(0, 20));
     assert!(!pointer.update(0, -19));
@@ -706,7 +862,14 @@ mod tests {
       release_pixels: 4,
       ..Config::default()
     };
-    let mut pointer = VirtualAndroidPointer::new(&config);
+    let mut pointer = VirtualAndroidPointer::new(
+      config.android_edge,
+      VirtualAndroidBounds {
+        width: config.android_width.unwrap(),
+        height: config.android_height.unwrap(),
+      },
+      config.release_pixels,
+    );
 
     assert!(!pointer.update(0, -20));
     assert!(!pointer.update(0, 19));
@@ -722,9 +885,153 @@ mod tests {
       release_pixels: 4,
       ..Config::default()
     };
-    let mut pointer = VirtualAndroidPointer::new(&config);
+    let mut pointer = VirtualAndroidPointer::new(
+      config.android_edge,
+      VirtualAndroidBounds {
+        width: config.android_width.unwrap(),
+        height: config.android_height.unwrap(),
+      },
+      config.release_pixels,
+    );
 
     assert!(!pointer.update(-10, 0));
     assert!(!pointer.update(0, 0));
+  }
+
+  #[test]
+  fn parses_adb_wm_physical_size() {
+    assert_eq!(
+      parse_wm_size("Physical size: 1440x3120\n"),
+      Some(VirtualAndroidBounds {
+        width: 1440,
+        height: 3120,
+      }),
+    );
+  }
+
+  #[test]
+  fn rejects_invalid_adb_wm_size() {
+    assert_eq!(parse_wm_size("Physical size: 0x2400\n"), None);
+  }
+
+  #[tokio::test(flavor = "current_thread")]
+  async fn runtime_releases_capture_when_android_focus_returns_to_host() {
+    let mut config = Config {
+      activation_pixels: 1,
+      android_width: Some(100),
+      android_height: Some(200),
+      release_pixels: 4,
+      ..Config::default()
+    };
+    config.scrcpy.audio_enabled = false;
+    let session_config = config.clone();
+    let runtime = Runtime::new(config);
+    let releases = Rc::new(Cell::new(0));
+    let starts = Rc::new(Cell::new(0));
+    let stops = Rc::new(Cell::new(0));
+    let moves = Rc::new(RefCell::new(Vec::new()));
+    let mut capture = FakeCapture {
+      events: VecDeque::from([
+        Ok((ANDROID_CAPTURE_HANDLE, CaptureEvent::Begin)),
+        Ok((
+          ANDROID_CAPTURE_HANDLE,
+          CaptureEvent::Input(Event::Pointer(PointerEvent::Motion {
+            time: 0,
+            dx: 10.0,
+            dy: 0.0,
+          })),
+        )),
+        Ok((
+          ANDROID_CAPTURE_HANDLE,
+          CaptureEvent::Input(Event::Pointer(PointerEvent::Motion {
+            time: 0,
+            dx: -10.0,
+            dy: 0.0,
+          })),
+        )),
+      ]),
+      releases: Rc::clone(&releases),
+    };
+
+    runtime
+      .run_capture_loop(&mut capture, || {
+        starts.set(starts.get() + 1);
+        std::future::ready(Ok(FakeSession {
+          pointer: VirtualAndroidPointer::new(
+            session_config.android_edge,
+            VirtualAndroidBounds {
+              width: session_config.android_width.unwrap(),
+              height: session_config.android_height.unwrap(),
+            },
+            session_config.release_pixels,
+          ),
+          stops: Rc::clone(&stops),
+          moves: Rc::clone(&moves),
+        }))
+      })
+      .await
+      .unwrap();
+
+    assert_eq!(starts.get(), 1);
+    assert_eq!(stops.get(), 1);
+    assert_eq!(releases.get(), 1);
+    assert_eq!(*moves.borrow(), vec![(10, 0)]);
+  }
+
+  struct FakeCapture {
+    events: VecDeque<io::Result<(u64, CaptureEvent)>>,
+    releases: Rc<Cell<usize>>,
+  }
+
+  impl futures_util::Stream for FakeCapture {
+    type Item = io::Result<(u64, CaptureEvent)>;
+
+    fn poll_next(
+      self: Pin<&mut Self>,
+      _cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+      Poll::Ready(self.get_mut().events.pop_front())
+    }
+  }
+
+  impl CaptureRuntime<io::Error> for FakeCapture {
+    async fn release_capture(&mut self) -> Result<()> {
+      self.releases.set(self.releases.get() + 1);
+      Ok(())
+    }
+  }
+
+  struct FakeSession {
+    pointer: VirtualAndroidPointer,
+    stops: Rc<Cell<usize>>,
+    moves: Rc<RefCell<Vec<(i32, i32)>>>,
+  }
+
+  impl FocusSession for FakeSession {
+    fn pointer_mut(&mut self) -> &mut VirtualAndroidPointer {
+      &mut self.pointer
+    }
+
+    fn move_mouse(&mut self, dx: i32, dy: i32) -> Result<()> {
+      self.moves.borrow_mut().push((dx, dy));
+      Ok(())
+    }
+
+    fn set_mouse_button(&mut self, _button: MouseButton, _pressed: bool) -> Result<()> {
+      Ok(())
+    }
+
+    fn scroll_mouse(&mut self, _hscroll: i32, _vscroll: i32) -> Result<()> {
+      Ok(())
+    }
+
+    fn set_key(&mut self, _linux_key: u32, _pressed: bool) -> Result<()> {
+      Ok(())
+    }
+
+    fn stop(&mut self) -> Result<()> {
+      self.stops.set(self.stops.get() + 1);
+      Ok(())
+    }
   }
 }
