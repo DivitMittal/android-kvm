@@ -84,6 +84,7 @@ audio-always-on = true
 adb-binary = "adb"
 android-width = 1080
 android-height = 2400
+control-port = 0
 
 [scrcpy]
 binary = "scrcpy"
@@ -99,7 +100,7 @@ shortcut-mod = "rctrl"
 extra-args = []
 ```
 
-Set `android-edge` to where the Android device sits relative to the host display: `left`, `right`, `top`, or `bottom`. Use `--android-edge <edge>` to override it for a single CLI invocation. Set `audio-always-on = false` if you prefer Android audio only while actively focused. Set `activation-pixels` to the outward swipe distance required after hitting the host edge. Increase it if accidental edge activation is still too easy. Set `android-width` and `android-height` to your Android display size so edge-return tracking matches the device bounds. If omitted, android-kvm uses a 1080x2400 virtual display.
+Set `android-edge` to where the Android device sits relative to the host display: `left`, `right`, `top`, or `bottom`. Use `--android-edge <edge>` to override it for a single CLI invocation. Set `audio-always-on = false` if you prefer Android audio only while actively focused. Set `activation-pixels` to the outward swipe distance required after hitting the host edge. Increase it if accidental edge activation is still too easy. Set `android-width` and `android-height` to your Android display size so edge-return tracking matches the device bounds. If omitted, android-kvm queries `adb shell wm size`; if discovery fails, it logs a warning and uses a 1080x2400 virtual display. Keep `control-port = 0` to let the OS choose a free local port for the scrcpy control tunnel.
 
 ## Home Manager
 
