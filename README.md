@@ -50,11 +50,19 @@ Run scrcpy:
 cargo run -- run
 ```
 
+Override the configured phone placement for one run:
+
+```bash
+cargo run -- --android-edge left run
+```
+
 Default backend command:
 
 ```bash
 scrcpy --no-video --no-window --audio-buffer=200 --keyboard=uhid --mouse=uhid --mouse-bind=bhsn --shortcut-mod=rctrl
 ```
+
+At runtime, android-kvm owns the scrcpy control socket directly for UHID input. When `audio-enabled = true`, it also starts an audio-only scrcpy process with `--no-control` so audio routes to the host without competing for input control. By default, `audio-always-on = true` keeps this audio route active even while host focus is active. Set it to `false` to start audio only while Android focus is active.
 
 ## Configuration
 
@@ -72,6 +80,7 @@ activation-pixels = 24
 release-pixels = 4
 poll-interval-ms = 16
 pointer-scale = 1.0
+audio-always-on = true
 adb-binary = "adb"
 android-width = 1080
 android-height = 2400
@@ -90,7 +99,7 @@ shortcut-mod = "rctrl"
 extra-args = []
 ```
 
-Set `activation-pixels` to the outward swipe distance required after hitting the host edge. Increase it if accidental edge activation is still too easy. Set `android-width` and `android-height` to your Android display size so edge-return tracking matches the device bounds. If omitted, android-kvm uses a 1080x2400 virtual display.
+Set `android-edge` to where the Android device sits relative to the host display: `left`, `right`, `top`, or `bottom`. Use `--android-edge <edge>` to override it for a single CLI invocation. Set `audio-always-on = false` if you prefer Android audio only while actively focused. Set `activation-pixels` to the outward swipe distance required after hitting the host edge. Increase it if accidental edge activation is still too easy. Set `android-width` and `android-height` to your Android display size so edge-return tracking matches the device bounds. If omitted, android-kvm uses a 1080x2400 virtual display.
 
 ## Home Manager
 
@@ -114,6 +123,7 @@ programs.android-kvm = {
     release-pixels = 4;
     poll-interval-ms = 16;
     pointer-scale = 1.0;
+    audio-always-on = true;
     adb-binary = "adb";
     scrcpy = {
       no-window = true;
@@ -128,10 +138,17 @@ programs.android-kvm = {
 };
 ```
 
-## Roadmap
+## Platform support
 
-1. Linux/X11 input watcher and pointer clamp.
-2. Linux evdev/uinput backend for global mouse and keyboard capture.
-3. Direct scrcpy control-channel integration instead of process-only launch.
-4. Wayland support through compositor-supported protocols where available.
-5. macOS and Windows capture backends.
+android-kvm follows lan-mouse's host-input model: it asks `input-capture` to pick the first available backend for the current OS instead of hard-coding one backend in this project.
+
+| Host OS | Runtime support | Packaging support |
+| --- | --- | --- |
+| Linux / Wayland | Uses lan-mouse `input-capture` backends such as layer-shell and input-capture portal when available. | Nix package/dev shell include the Linux X11 libraries required by lan-mouse's optional X11 backend. |
+| Linux / X11 | Uses lan-mouse's X11 capture backend when available. | Nix package/dev shell include `libX11` and `libXtst`. |
+| macOS | Uses lan-mouse's macOS capture backend; grant Accessibility/Input Monitoring permissions if edge capture does not start. | Exposed through the flake for `x86_64-darwin` and `aarch64-darwin`. |
+| Windows | Uses lan-mouse's Windows capture backend when built with Cargo on Windows. | Nix does not package Windows targets; use the Rust/Cargo workflow on Windows. |
+
+The Nix flake uses the same default Linux/Darwin system set as lan-mouse (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`) and marks the package metadata as available on all platforms supported by the underlying Rust dependencies.
+
+Every host still needs `adb`, `scrcpy`, USB access to the Android device, and any OS-specific input-capture permissions.
