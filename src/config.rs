@@ -14,6 +14,10 @@ pub struct Config {
     pub activation_pixels: u32,
     pub release_pixels: u32,
     pub poll_interval_ms: u64,
+    pub pointer_scale: f32,
+    pub adb_binary: String,
+    pub android_width: Option<i32>,
+    pub android_height: Option<i32>,
     pub scrcpy: ScrcpyConfig,
 }
 
@@ -24,6 +28,10 @@ impl Default for Config {
             activation_pixels: 1,
             release_pixels: 4,
             poll_interval_ms: 16,
+            pointer_scale: 1.0,
+            adb_binary: "adb".to_string(),
+            android_width: None,
+            android_height: None,
             scrcpy: ScrcpyConfig::default(),
         }
     }

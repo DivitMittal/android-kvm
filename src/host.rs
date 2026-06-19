@@ -5,6 +5,9 @@ use crate::edge::{Pointer, ScreenBounds};
 pub trait HostPointer {
     fn screen_bounds(&self) -> Result<ScreenBounds>;
     fn pointer(&self) -> Result<Pointer>;
+    fn begin_capture(&self, anchor: Pointer) -> Result<()>;
+    fn end_capture(&self) -> Result<()>;
+    fn warp_pointer(&self, pointer: Pointer) -> Result<()>;
 }
 
 pub fn default_host_pointer() -> Result<Box<dyn HostPointer>> {
@@ -17,6 +20,7 @@ mod platform {
     use core_graphics::display::CGDisplay;
     use core_graphics::event::CGEvent;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use core_graphics::geometry::CGPoint;
 
     use super::HostPointer;
     use crate::edge::{Pointer, ScreenBounds};
@@ -47,6 +51,24 @@ mod platform {
                 x: location.x.round() as i32,
                 y: location.y.round() as i32,
             })
+        }
+
+        fn begin_capture(&self, anchor: Pointer) -> Result<()> {
+            CGDisplay::main()
+                .hide_cursor()
+                .map_err(|err| anyhow!("failed to hide macOS cursor: {err}"))?;
+            self.warp_pointer(anchor)
+        }
+
+        fn end_capture(&self) -> Result<()> {
+            CGDisplay::main()
+                .show_cursor()
+                .map_err(|err| anyhow!("failed to show macOS cursor: {err}"))
+        }
+
+        fn warp_pointer(&self, pointer: Pointer) -> Result<()> {
+            CGDisplay::warp_mouse_cursor_position(CGPoint::new(pointer.x as f64, pointer.y as f64))
+                .map_err(|err| anyhow!("failed to warp macOS cursor: {err}"))
         }
     }
 }

@@ -15,9 +15,10 @@ This is an initial buildable scaffold. It currently provides:
 - Optional scrcpy audio transfer configuration.
 - A Home Manager module exported as `homeManagerModules.android-kvm` and `homeManagerModules.default`.
 - A tested edge-transition state machine.
-- A macOS host pointer backend that starts the hidden scrcpy focus backend when the configured screen edge is crossed.
+- A macOS host pointer backend that hides/re-centers the host cursor after edge activation.
+- ADB-backed Android pointer movement for the first functional handoff path.
 
-Direct scrcpy protocol forwarding and full host input grabbing are the next milestones.
+Direct scrcpy protocol forwarding and full keyboard/button grabbing are the next milestones.
 
 ## Usage
 
@@ -66,6 +67,10 @@ android-edge = "right"
 activation-pixels = 1
 release-pixels = 4
 poll-interval-ms = 16
+pointer-scale = 1.0
+adb-binary = "adb"
+android-width = 1080
+android-height = 2400
 
 [scrcpy]
 binary = "scrcpy"
@@ -102,6 +107,8 @@ programs.android-kvm = {
     activation-pixels = 1;
     release-pixels = 4;
     poll-interval-ms = 16;
+    pointer-scale = 1.0;
+    adb-binary = "adb";
     scrcpy = {
       no-window = true;
       audio-enabled = true;
