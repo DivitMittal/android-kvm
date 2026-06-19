@@ -1,11 +1,13 @@
-use std::io::{self, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Child, Command};
-use std::time::Duration;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use keycode::{KeyMap, KeyMapping, KeyState, KeyboardState};
+
+use crate::scrcpy::shell_words;
 
 const TYPE_UHID_CREATE: u8 = 12;
 const TYPE_UHID_INPUT: u8 = 13;
@@ -13,6 +15,8 @@ const TYPE_UHID_DESTROY: u8 = 14;
 const HID_ID_KEYBOARD: u16 = 1;
 const HID_ID_MOUSE: u16 = 2;
 const KEYBOARD_ROLLOVER: usize = 6;
+const SERVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const SERVER_ACCEPT_POLL: Duration = Duration::from_millis(25);
 
 const MOUSE_REPORT_DESC: &[u8] = &[
   0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29, 0x05,
@@ -44,6 +48,53 @@ pub struct ScrcpyServerControl {
 }
 
 impl ScrcpyServerControl {
+  pub fn command_preview(
+    adb: &str,
+    serial: Option<&str>,
+    scrcpy_binary: &str,
+    server_path: Option<&str>,
+    port: u16,
+  ) -> String {
+    let device_server_path = "/data/local/tmp/scrcpy-server.jar";
+    let host_server_path = server_path.unwrap_or("<scrcpy-server-from-scrcpy>");
+    let control_port = if port == 0 {
+      "<allocated-control-port>".to_string()
+    } else {
+      port.to_string()
+    };
+    let socket_name = "scrcpy_<random-scid>";
+
+    [
+      shell_words(adb_words(adb, serial).chain(["push", host_server_path, device_server_path])),
+      shell_words(adb_words(adb, serial).chain([
+        "reverse",
+        &format!("localabstract:{socket_name}"),
+        &format!("tcp:{control_port}"),
+      ])),
+      shell_words(adb_words(adb, serial).chain([
+        "shell",
+        &format!("CLASSPATH={device_server_path}"),
+        "app_process",
+        "/",
+        "com.genymobile.scrcpy.Server",
+        "<scrcpy-version>",
+        "scid=<random-scid>",
+        "log_level=info",
+        "video=false",
+        "audio=false",
+        "control=true",
+        "send_dummy_byte=false",
+        "send_device_meta=false",
+        "send_frame_meta=false",
+        "clipboard_autosync=false",
+        "cleanup=false",
+        "power_on=false",
+      ])),
+      format!("# scrcpy binary used for server discovery: {scrcpy_binary}"),
+    ]
+    .join("\n")
+  }
+
   pub fn start(
     adb: &str,
     serial: Option<&str>,
@@ -78,7 +129,7 @@ impl ScrcpyServerControl {
       .context("failed to read control listener address")?
       .port();
     listener
-      .set_nonblocking(false)
+      .set_nonblocking(true)
       .context("failed to configure control listener")?;
 
     ensure_success(
@@ -93,7 +144,7 @@ impl ScrcpyServerControl {
       "adb reverse scrcpy control socket",
     )?;
 
-    let process = adb_command(adb, serial)
+    let mut process = adb_command(adb, serial)
       .args([
         "shell",
         &format!("CLASSPATH={device_server_path}"),
@@ -113,11 +164,11 @@ impl ScrcpyServerControl {
         "cleanup=false",
         "power_on=false",
       ])
+      .stderr(Stdio::piped())
       .spawn()
       .with_context(|| format!("failed to start scrcpy server with {adb}"))?;
 
-    let (stream, _) = listener
-      .accept()
+    let stream = accept_control_connection(&listener, &mut process)
       .context("failed to accept scrcpy control connection")?;
     stream
       .set_nodelay(true)
@@ -353,6 +404,62 @@ fn adb_command(adb: &str, serial: Option<&str>) -> Command {
   command
 }
 
+fn adb_words<'a>(adb: &'a str, serial: Option<&'a str>) -> impl Iterator<Item = &'a str> {
+  std::iter::once(adb).chain(serial.into_iter().flat_map(|serial| ["-s", serial]))
+}
+
+fn accept_control_connection(listener: &TcpListener, process: &mut Child) -> Result<TcpStream> {
+  let deadline = Instant::now() + SERVER_CONNECT_TIMEOUT;
+
+  loop {
+    match listener.accept() {
+      Ok((stream, _)) => return Ok(stream),
+      Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+      Err(error) => return Err(error).context("control listener accept failed"),
+    }
+
+    if let Some(status) = process
+      .try_wait()
+      .context("failed to inspect scrcpy server process")?
+    {
+      let stderr = read_server_stderr(process);
+      bail!("scrcpy server exited before opening control socket: {status}{stderr}");
+    }
+
+    if Instant::now() >= deadline {
+      process.kill().ok();
+      let status = process.wait().ok();
+      let stderr = read_server_stderr(process);
+      bail!(
+        "timed out after {}s waiting for scrcpy control socket; server status: {}{stderr}",
+        SERVER_CONNECT_TIMEOUT.as_secs(),
+        format_server_status(status),
+      );
+    }
+
+    std::thread::sleep(SERVER_ACCEPT_POLL);
+  }
+}
+
+fn read_server_stderr(process: &mut Child) -> String {
+  let Some(mut stderr) = process.stderr.take() else {
+    return String::new();
+  };
+  let mut output = String::new();
+  match stderr.read_to_string(&mut output) {
+    Ok(_) if output.trim().is_empty() => String::new(),
+    Ok(_) => format!("; stderr: {}", output.trim()),
+    Err(error) => format!("; failed to read stderr: {error}"),
+  }
+}
+
+fn format_server_status(status: Option<ExitStatus>) -> String {
+  status.map_or_else(
+    || "killed after timeout".to_string(),
+    |status| status.to_string(),
+  )
+}
+
 fn random_scid() -> Result<u32> {
   let mut bytes = [0u8; 4];
   getrandom::fill(&mut bytes)
@@ -554,7 +661,10 @@ mod tests {
 
   #[test]
   fn split_motion_keeps_exact_i8_boundaries_in_one_report() {
-    assert_eq!(split_motion(127, -127).collect::<Vec<_>>(), vec![(127, -127)]);
+    assert_eq!(
+      split_motion(127, -127).collect::<Vec<_>>(),
+      vec![(127, -127)]
+    );
   }
 
   #[test]
@@ -566,6 +676,44 @@ mod tests {
     assert_eq!(positive.iter().map(|(x, _)| *x as i32).sum::<i32>(), 128);
     assert_eq!(negative, vec![(-64, 0), (-64, 0)]);
     assert_eq!(negative.iter().map(|(x, _)| *x as i32).sum::<i32>(), -128);
+  }
+
+  #[test]
+  fn server_command_preview_uses_direct_app_process_control_path() {
+    let preview = ScrcpyServerControl::command_preview(
+      "adb-test",
+      Some("device-1"),
+      "scrcpy-test",
+      Some("/tmp/scrcpy-server"),
+      27183,
+    );
+
+    assert!(preview.contains("adb-test -s device-1 push /tmp/scrcpy-server"));
+    assert!(
+      preview
+        .contains("adb-test -s device-1 reverse 'localabstract:scrcpy_<random-scid>' tcp:27183")
+    );
+    assert!(preview.contains("adb-test -s device-1 shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server"));
+    assert!(preview.contains("# scrcpy binary used for server discovery: scrcpy-test"));
+    assert!(!preview.contains("scrcpy --no-video"));
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn accept_control_connection_reports_server_exit_stderr() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut process = Command::new("sh")
+      .args(["-c", "printf server-failed >&2; exit 7"])
+      .stderr(Stdio::piped())
+      .spawn()
+      .unwrap();
+
+    let error = accept_control_connection(&listener, &mut process).unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("scrcpy server exited before opening control socket"));
+    assert!(message.contains("server-failed"));
   }
 
   fn keyboard_report_at(out: &[u8], index: usize) -> [u8; 8] {
