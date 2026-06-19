@@ -1,6 +1,7 @@
 mod config;
-#[allow(dead_code)]
 mod edge;
+mod host;
+mod runtime;
 mod scrcpy;
 
 use std::path::PathBuf;
@@ -9,6 +10,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
+use crate::host::default_host_pointer;
+use crate::runtime::Runtime;
 use crate::scrcpy::ScrcpyBackend;
 
 #[derive(Debug, Parser)]
@@ -47,7 +50,9 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
-            backend.run().context("failed to run scrcpy backend")
+            Runtime::new(config, default_host_pointer()?)
+                .run()
+                .context("android-kvm runtime failed")
         }
         Command::PrintConfig => {
             println!("{}", toml::to_string_pretty(&config)?);

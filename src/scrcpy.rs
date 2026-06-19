@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::process::{Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ pub struct ScrcpyConfig {
     pub binary: String,
     pub serial: Option<String>,
     pub no_video: bool,
+    pub no_window: bool,
     pub audio_enabled: bool,
     pub audio_buffer_ms: u16,
     pub keyboard: HidMode,
@@ -25,6 +26,7 @@ impl Default for ScrcpyConfig {
             binary: "scrcpy".to_string(),
             serial: None,
             no_video: true,
+            no_window: true,
             audio_enabled: true,
             audio_buffer_ms: 200,
             keyboard: HidMode::Uhid,
@@ -75,13 +77,10 @@ impl ScrcpyBackend {
         ensure_success(status, "scrcpy --version")
     }
 
-    pub fn run(&self) -> Result<()> {
-        let status = self
-            .command()
-            .status()
-            .with_context(|| format!("failed to execute {}", self.config.binary))?;
-
-        ensure_success(status, "scrcpy backend")
+    pub fn spawn(&self) -> Result<Child> {
+        self.command()
+            .spawn()
+            .with_context(|| format!("failed to execute {}", self.config.binary))
     }
 
     pub fn command_preview(&self) -> String {
@@ -104,6 +103,10 @@ impl ScrcpyBackend {
 
         if self.config.no_video {
             args.push("--no-video".into());
+        }
+
+        if self.config.no_window {
+            args.push("--no-window".into());
         }
 
         if self.config.audio_enabled {
@@ -158,6 +161,7 @@ mod tests {
         let backend = ScrcpyBackend::new(ScrcpyConfig::default());
 
         assert!(backend.command_preview().contains("--audio-buffer=200"));
+        assert!(backend.command_preview().contains("--no-window"));
     }
 
     #[test]

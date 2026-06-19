@@ -14,9 +14,10 @@ This is an initial buildable scaffold. It currently provides:
 - A scrcpy backend launcher matching the known-good UHID/no-video command.
 - Optional scrcpy audio transfer configuration.
 - A Home Manager module exported as `homeManagerModules.android-kvm` and `homeManagerModules.default`.
-- A tested edge-transition state machine ready to connect to OS input capture.
+- A tested edge-transition state machine.
+- A macOS host pointer backend that starts the hidden scrcpy focus backend when the configured screen edge is crossed.
 
-Real global input capture is the next milestone.
+Direct scrcpy protocol forwarding and full host input grabbing are the next milestones.
 
 ## Usage
 
@@ -64,11 +65,13 @@ Example:
 android-edge = "right"
 activation-pixels = 1
 release-pixels = 4
+poll-interval-ms = 16
 
 [scrcpy]
 binary = "scrcpy"
 serial = "DEVICE_SERIAL"
 no-video = true
+no-window = true
 audio-enabled = true
 audio-buffer-ms = 200
 keyboard = "uhid"
@@ -98,7 +101,9 @@ programs.android-kvm = {
     android-edge = "right";
     activation-pixels = 1;
     release-pixels = 4;
+    poll-interval-ms = 16;
     scrcpy = {
+      no-window = true;
       audio-enabled = true;
       audio-buffer-ms = 200;
       keyboard = "uhid";

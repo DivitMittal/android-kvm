@@ -13,6 +13,7 @@ pub struct Config {
     pub android_edge: Edge,
     pub activation_pixels: u32,
     pub release_pixels: u32,
+    pub poll_interval_ms: u64,
     pub scrcpy: ScrcpyConfig,
 }
 
@@ -22,6 +23,7 @@ impl Default for Config {
             android_edge: Edge::Right,
             activation_pixels: 1,
             release_pixels: 4,
+            poll_interval_ms: 16,
             scrcpy: ScrcpyConfig::default(),
         }
     }
