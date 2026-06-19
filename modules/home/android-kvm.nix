@@ -22,7 +22,7 @@ in {
       default = {};
       example = {
         android-edge = "right";
-        activation-pixels = 1;
+        activation-pixels = 24;
         release-pixels = 4;
         scrcpy = {
           audio-enabled = true;

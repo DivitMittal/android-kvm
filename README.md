@@ -16,13 +16,13 @@ This is an initial buildable scaffold. It currently provides:
 - A Home Manager module exported as `homeManagerModules.android-kvm` and `homeManagerModules.default`.
 - A lan-mouse-backed edge capture runtime using `input-capture`/`input-event`.
 - Relative pointer motion forwarding from the OS capture backend into Android.
-- ADB-backed Android pointer movement for the first functional Android input path.
+- Virtual Android pointer bounds tracking for lan-mouse-style return to the host.
 
 Mouse motion, mouse buttons, scroll, and common keyboard keys are forwarded through scrcpy's UHID control path.
 
-The capture layer uses GPL-3.0-or-later lan-mouse crates, so this project is licensed as GPL-3.0-or-later.
+Swipe through the configured host edge to enter Android. Merely resting at the edge is not enough: the pointer must keep moving outward by `activation-pixels` before Android focus starts. When Android focus is active, move back across the Android edge opposite the configured host edge to return to the host. For example, with `android-edge = "right"`, swipe through the host's right edge to enter Android, then move left to Android's left edge to release capture back to the host.
 
-Press `Esc` while Android focus is active to release capture back to the host.
+The capture layer uses GPL-3.0-or-later lan-mouse crates, so this project is licensed as GPL-3.0-or-later.
 
 ## Usage
 
@@ -68,7 +68,7 @@ Example:
 
 ```toml
 android-edge = "right"
-activation-pixels = 1
+activation-pixels = 24
 release-pixels = 4
 poll-interval-ms = 16
 pointer-scale = 1.0
@@ -90,6 +90,8 @@ shortcut-mod = "rctrl"
 extra-args = []
 ```
 
+Set `activation-pixels` to the outward swipe distance required after hitting the host edge. Increase it if accidental edge activation is still too easy. Set `android-width` and `android-height` to your Android display size so edge-return tracking matches the device bounds. If omitted, android-kvm uses a 1080x2400 virtual display.
+
 ## Home Manager
 
 Import the module from the flake and configure `programs.android-kvm`.
@@ -108,7 +110,7 @@ programs.android-kvm = {
   package = inputs.android-kvm.packages.${pkgs.stdenv.hostPlatform.system}.default;
   settings = {
     android-edge = "right";
-    activation-pixels = 1;
+    activation-pixels = 24;
     release-pixels = 4;
     poll-interval-ms = 16;
     pointer-scale = 1.0;

@@ -27,7 +27,7 @@ impl Default for Config {
   fn default() -> Self {
     Self {
       android_edge: Edge::Right,
-      activation_pixels: 1,
+      activation_pixels: 24,
       release_pixels: 4,
       poll_interval_ms: 16,
       pointer_scale: 1.0,
