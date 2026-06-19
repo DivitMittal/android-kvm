@@ -172,10 +172,10 @@ impl Runtime {
       if state != 0 && key == scancode::Linux::KeyEsc as u32 {
         return Ok(true);
       }
+
+      _session.control.set_key(key, state != 0)?;
     }
 
-    // Keyboard forwarding needs HID keyboard report generation. The event is still
-    // consumed by the capture backend while Android focus is active.
     Ok(false)
   }
 }

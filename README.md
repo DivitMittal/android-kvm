@@ -18,9 +18,11 @@ This is an initial buildable scaffold. It currently provides:
 - Relative pointer motion forwarding from the OS capture backend into Android.
 - ADB-backed Android pointer movement for the first functional Android input path.
 
-Direct scrcpy protocol forwarding and full keyboard/button grabbing are the next milestones.
+Mouse motion, mouse buttons, scroll, and common keyboard keys are forwarded through scrcpy's UHID control path.
 
 The capture layer uses GPL-3.0-or-later lan-mouse crates, so this project is licensed as GPL-3.0-or-later.
+
+Press `Esc` while Android focus is active to release capture back to the host.
 
 ## Usage
 

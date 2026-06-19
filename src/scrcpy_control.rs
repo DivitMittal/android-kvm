@@ -9,7 +9,9 @@ use anyhow::{Context, Result, bail};
 const TYPE_UHID_CREATE: u8 = 12;
 const TYPE_UHID_INPUT: u8 = 13;
 const TYPE_UHID_DESTROY: u8 = 14;
+const HID_ID_KEYBOARD: u16 = 1;
 const HID_ID_MOUSE: u16 = 2;
+const KEYBOARD_KEYS: usize = 0x66;
 
 const MOUSE_REPORT_DESC: &[u8] = &[
   0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29, 0x05,
@@ -19,9 +21,18 @@ const MOUSE_REPORT_DESC: &[u8] = &[
   0x06, 0xC0, 0xC0,
 ];
 
+const KEYBOARD_REPORT_DESC: &[u8] = &[
+  0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+  0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x75, 0x08, 0x95, 0x01, 0x81, 0x01, 0x05, 0x08, 0x19, 0x01,
+  0x29, 0x05, 0x75, 0x01, 0x95, 0x05, 0x91, 0x02, 0x75, 0x03, 0x95, 0x01, 0x91, 0x01, 0x05, 0x07,
+  0x19, 0x00, 0x29, 0x65, 0x15, 0x00, 0x25, 0x65, 0x75, 0x08, 0x95, 0x06, 0x81, 0x00, 0xC0,
+];
+
 pub struct ScrcpyControl<W> {
   writer: W,
   buttons: u8,
+  keyboard_mods: u8,
+  keyboard_keys: [bool; KEYBOARD_KEYS],
 }
 
 pub struct ScrcpyServerControl {
@@ -115,6 +126,9 @@ impl ScrcpyServerControl {
     control
       .create_mouse()
       .context("failed to create UHID mouse")?;
+    control
+      .create_keyboard()
+      .context("failed to create UHID keyboard")?;
 
     Ok(Self {
       process,
@@ -146,7 +160,15 @@ impl ScrcpyServerControl {
       .context("failed to send UHID mouse scroll")
   }
 
+  pub fn set_key(&mut self, linux_key: u32, pressed: bool) -> Result<bool> {
+    self
+      .control
+      .set_key(linux_key, pressed)
+      .context("failed to send UHID keyboard input")
+  }
+
   pub fn stop(&mut self) -> Result<()> {
+    self.control.destroy_keyboard().ok();
     self.control.destroy_mouse().ok();
     self.process.kill().ok();
     self.process.wait().ok();
@@ -170,18 +192,31 @@ impl Drop for ScrcpyServerControl {
 
 impl<W: Write> ScrcpyControl<W> {
   pub fn new(writer: W) -> Self {
-    Self { writer, buttons: 0 }
+    Self {
+      writer,
+      buttons: 0,
+      keyboard_mods: 0,
+      keyboard_keys: [false; KEYBOARD_KEYS],
+    }
+  }
+
+  pub fn create_keyboard(&mut self) -> io::Result<()> {
+    self.create_hid(HID_ID_KEYBOARD, KEYBOARD_REPORT_DESC)
   }
 
   pub fn create_mouse(&mut self) -> io::Result<()> {
+    self.create_hid(HID_ID_MOUSE, MOUSE_REPORT_DESC)
+  }
+
+  fn create_hid(&mut self, id: u16, report_desc: &[u8]) -> io::Result<()> {
     let mut msg = Vec::with_capacity(1 + 2 + 2 + 2 + 1 + 2 + MOUSE_REPORT_DESC.len());
     msg.push(TYPE_UHID_CREATE);
-    write_u16(&mut msg, HID_ID_MOUSE);
+    write_u16(&mut msg, id);
     write_u16(&mut msg, 0);
     write_u16(&mut msg, 0);
     msg.push(0);
-    write_u16(&mut msg, MOUSE_REPORT_DESC.len() as u16);
-    msg.extend_from_slice(MOUSE_REPORT_DESC);
+    write_u16(&mut msg, report_desc.len() as u16);
+    msg.extend_from_slice(report_desc);
     self.writer.write_all(&msg)
   }
 
@@ -210,20 +245,142 @@ impl<W: Write> ScrcpyControl<W> {
   }
 
   pub fn destroy_mouse(&mut self) -> io::Result<()> {
+    self.destroy_hid(HID_ID_MOUSE)
+  }
+
+  pub fn destroy_keyboard(&mut self) -> io::Result<()> {
+    self.destroy_hid(HID_ID_KEYBOARD)
+  }
+
+  fn destroy_hid(&mut self, id: u16) -> io::Result<()> {
     let mut msg = Vec::with_capacity(3);
     msg.push(TYPE_UHID_DESTROY);
-    write_u16(&mut msg, HID_ID_MOUSE);
+    write_u16(&mut msg, id);
     self.writer.write_all(&msg)
   }
 
+  pub fn set_key(&mut self, linux_key: u32, pressed: bool) -> io::Result<bool> {
+    let Some(key) = keyboard_key(linux_key) else {
+      return Ok(false);
+    };
+
+    match key {
+      KeyboardKey::Modifier(bit) => {
+        if pressed {
+          self.keyboard_mods |= bit;
+        } else {
+          self.keyboard_mods &= !bit;
+        }
+      }
+      KeyboardKey::Usage(usage) => {
+        self.keyboard_keys[usage as usize] = pressed;
+      }
+    }
+
+    self.keyboard_input()?;
+    Ok(true)
+  }
+
+  fn keyboard_input(&mut self) -> io::Result<()> {
+    let mut data = [0u8; 8];
+    data[0] = self.keyboard_mods;
+
+    let mut index = 2;
+    for (usage, pressed) in self.keyboard_keys.iter().enumerate() {
+      if !pressed {
+        continue;
+      }
+      if index >= data.len() {
+        data[2..].fill(1);
+        break;
+      }
+      data[index] = usage as u8;
+      index += 1;
+    }
+
+    self.hid_input(HID_ID_KEYBOARD, &data)
+  }
+
   fn input(&mut self, data: [u8; 5]) -> io::Result<()> {
+    self.hid_input(HID_ID_MOUSE, &data)
+  }
+
+  fn hid_input(&mut self, id: u16, data: &[u8]) -> io::Result<()> {
     let mut msg = Vec::with_capacity(10);
     msg.push(TYPE_UHID_INPUT);
-    write_u16(&mut msg, HID_ID_MOUSE);
+    write_u16(&mut msg, id);
     write_u16(&mut msg, data.len() as u16);
-    msg.extend_from_slice(&data);
+    msg.extend_from_slice(data);
     self.writer.write_all(&msg)
   }
+}
+
+enum KeyboardKey {
+  Modifier(u8),
+  Usage(u8),
+}
+
+fn keyboard_key(linux_key: u32) -> Option<KeyboardKey> {
+  let usage = match linux_key {
+    1 => 0x29,
+    2..=10 => linux_key + 0x1c,
+    11 => 0x27,
+    12 => 0x2d,
+    13 => 0x2e,
+    14 => 0x2a,
+    15 => 0x2b,
+    16 => 0x14,
+    17 => 0x1a,
+    18 => 0x08,
+    19 => 0x15,
+    20 => 0x17,
+    21 => 0x1c,
+    22 => 0x18,
+    23 => 0x0c,
+    24 => 0x12,
+    25 => 0x13,
+    26 => 0x2f,
+    27 => 0x30,
+    28 => 0x28,
+    29 => return Some(KeyboardKey::Modifier(1 << 0)),
+    30..=38 => linux_key - 26,
+    39 => 0x33,
+    40 => 0x34,
+    41 => 0x35,
+    42 => return Some(KeyboardKey::Modifier(1 << 1)),
+    43 => 0x31,
+    44..=50 => linux_key - 25,
+    51 => 0x36,
+    52 => 0x37,
+    53 => 0x38,
+    54 => return Some(KeyboardKey::Modifier(1 << 5)),
+    55 => 0x55,
+    56 => return Some(KeyboardKey::Modifier(1 << 2)),
+    57 => 0x2c,
+    58 => 0x39,
+    59..=68 => linux_key - 1,
+    87 => 0x44,
+    88 => 0x45,
+    96 => 0x58,
+    97 => return Some(KeyboardKey::Modifier(1 << 4)),
+    98 => 0x54,
+    100 => return Some(KeyboardKey::Modifier(1 << 6)),
+    102 => 0x4a,
+    103 => 0x52,
+    104 => 0x4b,
+    105 => 0x50,
+    106 => 0x4f,
+    107 => 0x4d,
+    108 => 0x51,
+    109 => 0x4e,
+    110 => 0x49,
+    111 => 0x4c,
+    125 => return Some(KeyboardKey::Modifier(1 << 3)),
+    126 => return Some(KeyboardKey::Modifier(1 << 7)),
+    _ => return None,
+  };
+
+  Some(KeyboardKey::Usage(usage as u8))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -382,6 +539,45 @@ mod tests {
     assert_eq!(
       out,
       vec![TYPE_UHID_INPUT, 0, HID_ID_MOUSE as u8, 0, 5, 1, 0, 0, 0, 0]
+    );
+  }
+
+  #[test]
+  fn serializes_keyboard_create_message() {
+    let mut out = Vec::new();
+    ScrcpyControl::new(&mut out).create_keyboard().unwrap();
+
+    assert_eq!(out[0], TYPE_UHID_CREATE);
+    assert_eq!(&out[1..3], &HID_ID_KEYBOARD.to_be_bytes());
+    assert_eq!(
+      &out[8..10],
+      &(KEYBOARD_REPORT_DESC.len() as u16).to_be_bytes()
+    );
+    assert_eq!(&out[10..], KEYBOARD_REPORT_DESC);
+  }
+
+  #[test]
+  fn serializes_keyboard_key_message() {
+    let mut out = Vec::new();
+    ScrcpyControl::new(&mut out).set_key(30, true).unwrap();
+
+    assert_eq!(
+      out,
+      vec![
+        TYPE_UHID_INPUT,
+        0,
+        HID_ID_KEYBOARD as u8,
+        0,
+        8,
+        0,
+        0,
+        4,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
     );
   }
 
