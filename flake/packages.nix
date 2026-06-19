@@ -12,6 +12,16 @@
         };
       };
       nativeBuildInputs = [pkgs.pkg-config];
+      buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+        pkgs.libX11
+        pkgs.libXtst
+      ];
+
+      meta = {
+        description = "USB Android software KVM backed by scrcpy";
+        mainProgram = "android-kvm";
+        platforms = pkgs.lib.platforms.all;
+      };
     };
   };
 }
