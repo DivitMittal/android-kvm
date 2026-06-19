@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::edge::Edge;
@@ -37,7 +37,7 @@ impl Default for Config {
       android_width: None,
       android_height: None,
       scrcpy_server_path: None,
-      control_port: 27183,
+      control_port: 0,
       scrcpy: ScrcpyConfig::default(),
     }
   }
@@ -56,6 +56,49 @@ impl Config {
     let raw = fs::read_to_string(&path)
       .with_context(|| format!("failed to read config at {}", path.display()))?;
     toml::from_str(&raw).with_context(|| format!("failed to parse config at {}", path.display()))
+  }
+
+  pub fn validate(&self) -> Result<()> {
+    if self.activation_pixels == 0 {
+      bail!("activation-pixels must be greater than 0");
+    }
+    if self.release_pixels == 0 {
+      bail!("release-pixels must be greater than 0");
+    }
+    if !self.pointer_scale.is_finite() || self.pointer_scale <= 0.0 {
+      bail!("pointer-scale must be a finite number greater than 0");
+    }
+    if self.poll_interval_ms == 0 {
+      bail!("poll-interval-ms must be greater than 0");
+    }
+    if self.adb_binary.is_empty() {
+      bail!("adb-binary must not be empty");
+    }
+    if self.scrcpy.binary.is_empty() {
+      bail!("scrcpy.binary must not be empty");
+    }
+    if let Some(width) = self.android_width {
+      if width <= 0 {
+        bail!("android-width must be greater than 0 when set");
+      }
+    }
+    if let Some(height) = self.android_height {
+      if height <= 0 {
+        bail!("android-height must be greater than 0 when set");
+      }
+    }
+    if self.android_width.is_some() != self.android_height.is_some() {
+      bail!("android-width and android-height must be set together");
+    }
+    if let (Some(width), Some(height)) = (self.android_width, self.android_height) {
+      let release_pixels = i32::try_from(self.release_pixels)
+        .context("release-pixels is too large for Android geometry")?;
+      if release_pixels >= width || release_pixels >= height {
+        bail!("release-pixels must be smaller than android-width and android-height");
+      }
+    }
+
+    Ok(())
   }
 }
 
@@ -84,5 +127,37 @@ audio-always-on = false
   #[test]
   fn defaults_audio_to_always_on() {
     assert!(Config::default().audio_always_on);
+  }
+
+  #[test]
+  fn rejects_zero_activation_pixels() {
+    let config = Config {
+      activation_pixels: 0,
+      ..Config::default()
+    };
+
+    assert!(config.validate().is_err());
+  }
+
+  #[test]
+  fn rejects_non_positive_pointer_scale() {
+    let config = Config {
+      pointer_scale: 0.0,
+      ..Config::default()
+    };
+
+    assert!(config.validate().is_err());
+  }
+
+  #[test]
+  fn rejects_release_pixels_outside_configured_device_bounds() {
+    let config = Config {
+      android_width: Some(100),
+      android_height: Some(200),
+      release_pixels: 100,
+      ..Config::default()
+    };
+
+    assert!(config.validate().is_err());
   }
 }

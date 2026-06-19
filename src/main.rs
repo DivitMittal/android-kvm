@@ -53,6 +53,7 @@ fn main() -> Result<()> {
   if let Some(android_edge) = cli.android_edge {
     config.android_edge = android_edge;
   }
+  config.validate()?;
 
   match cli.command {
     Command::Run { dry_run } => {
