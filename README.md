@@ -1,8 +1,28 @@
 <div id="top">
   <div align="center">
     <h1>android-kvm</h1>
-    <strong>USB Android software KVM for keyboard and mouse sharing, backed by scrcpy.</strong>
+    <strong>USB Android software KVM for keyboard and mouse sharing, backed by <a href="https://github.com/Genymobile/scrcpy">scrcpy</a>.</strong>
   </div>
+</div>
+
+<div align="center">
+    <a href="https://github.com/DivitMittal/android-kvm">
+        <img src="https://img.shields.io/github/repo-size/DivitMittal/android-kvm?style=for-the-badge&logo=github" alt="repo-size"/>
+    </a>
+    <a href="https://github.com/DivitMittal/android-kvm/blob/main/LICENSE">
+        <img src="https://img.shields.io/static/v1.svg?style=for-the-badge&label=License&message=GPL--3.0--or--later&logo=unlicense" alt="license"/>
+    </a>
+</div>
+
+---
+
+<div align="center">
+    <a href="https://github.com/DivitMittal/android-kvm/actions/workflows/flake-check.yml">
+        <img src="https://github.com/DivitMittal/android-kvm/actions/workflows/flake-check.yml/badge.svg" alt="Nix Flake Check"/>
+    </a>
+    <a href="https://github.com/DivitMittal/android-kvm/actions/workflows/flake-lock-update.yml">
+        <img src="https://github.com/DivitMittal/android-kvm/actions/workflows/flake-lock-update.yml/badge.svg" alt="Update Flake Lock"/>
+    </a>
 </div>
 
 ---
@@ -24,10 +44,10 @@
 
 `android-kvm` turns a USB-connected Android device into an edge-adjacent software KVM target. Push the host pointer through a configured screen edge, and the host starts forwarding keyboard and mouse input to Android through scrcpy's UHID control channel. Move back through the opposite Android edge to release capture and return to the host.
 
-The project intentionally mirrors the lan-mouse interaction model, but keeps Android transport USB-first:
+The project intentionally mirrors the [lan-mouse](https://github.com/feschber/lan-mouse) interaction model, but keeps Android transport USB-first:
 
 - **Host capture** comes from lan-mouse's `input-capture` / `input-event` crates.
-- **Android injection** uses scrcpy's server and control socket directly.
+- **Android injection** uses [scrcpy](https://github.com/Genymobile/scrcpy)'s server and control socket directly.
 - **Audio** can be kept alive through a separate audio-only scrcpy process.
 - **Nix integration** exposes both a package and a Home Manager module.
 
