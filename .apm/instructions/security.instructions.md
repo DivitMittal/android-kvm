@@ -1,7 +1,6 @@
----
-description: Security rules for android-kvm
-applyTo: "**"
----
+______________________________________________________________________
+
+## description: Security rules for android-kvm applyTo: "\*\*"
 
 # Security
 
