@@ -8,4 +8,18 @@ target:
   - opencode
 type: instructions
 
-dependencies: {}
+dependencies:
+  mcp:
+    - name: serena
+      registry: false
+      transport: stdio
+      command: uvx
+      args:
+        - --from
+        - git+https://github.com/oraios/serena
+        - serena
+        - start-mcp-server
+        - --context
+        - claude-code
+        - --project
+        - ~/Projects/hid/android-kvm
