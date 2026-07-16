@@ -1,5 +1,9 @@
 {self, ...}: {
-  perSystem = {pkgs, ...}: {
+  perSystem = {
+    config,
+    pkgs,
+    ...
+  }: {
     packages.default = pkgs.rustPlatform.buildRustPackage {
       pname = "android-kvm";
       version = "0.1.0";
@@ -22,6 +26,12 @@
         mainProgram = "android-kvm";
         platforms = pkgs.lib.platforms.all;
       };
+    };
+
+    apps.default = {
+      type = "app";
+      program = pkgs.lib.getExe config.packages.default;
+      meta.description = "Run android-kvm";
     };
   };
 }
