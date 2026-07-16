@@ -13,9 +13,13 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 use crate::edge::Edge;
 use crate::scrcpy::shell_words;
-use crate::scrcpy_control::{MouseButton, ScrcpyServerControl};
+use crate::scrcpy_control::{
+  MouseButton, ScrcpyServerControl, ScrcpyServerOptions, adb_command, ensure_success,
+};
 
 const ANDROID_CAPTURE_HANDLE: u64 = 1;
+const STAY_AWAKE_SETTING: &str = "stay_on_while_plugged_in";
+const STAY_AWAKE_WHILE_USB_CONNECTED: &str = "2";
 
 pub struct Runtime {
   config: Config,
@@ -27,13 +31,14 @@ impl Runtime {
   }
 
   pub fn command_preview(config: &Config) -> String {
-    let mut commands = vec![ScrcpyServerControl::command_preview(
-      &config.adb_binary,
-      config.scrcpy.serial.as_deref(),
-      &config.scrcpy.binary,
-      config.scrcpy_server_path.as_deref(),
-      config.control_port,
-    )];
+    let mut commands = vec![ScrcpyServerControl::command_preview(ScrcpyServerOptions {
+      adb: &config.adb_binary,
+      serial: config.scrcpy.serial.as_deref(),
+      scrcpy_binary: &config.scrcpy.binary,
+      server_path: config.scrcpy_server_path.as_deref(),
+      port: config.control_port,
+      power_on: config.power_on_on_connect,
+    })];
 
     if let Some((binary, args)) = audio_command_parts(config) {
       let words = std::iter::once(binary.as_str()).chain(args.iter().map(String::as_str));
@@ -172,13 +177,22 @@ impl Runtime {
   }
 
   fn start_android_focus(&self) -> Result<ActiveSession> {
-    let control = ScrcpyServerControl::start(
-      &self.config.adb_binary,
-      self.config.scrcpy.serial.as_deref(),
-      &self.config.scrcpy.binary,
-      self.config.scrcpy_server_path.as_deref(),
-      self.config.control_port,
-    )?;
+    let stay_awake = if self.config.keep_awake_while_connected {
+      Some(StayAwakeGuard::enable(Box::new(AdbDeviceSettings::new(
+        &self.config.adb_binary,
+        self.config.scrcpy.serial.as_deref(),
+      )))?)
+    } else {
+      None
+    };
+    let control = ScrcpyServerControl::start(ScrcpyServerOptions {
+      adb: &self.config.adb_binary,
+      serial: self.config.scrcpy.serial.as_deref(),
+      scrcpy_binary: &self.config.scrcpy.binary,
+      server_path: self.config.scrcpy_server_path.as_deref(),
+      port: self.config.control_port,
+      power_on: self.config.power_on_on_connect,
+    })?;
     let audio = if self.config.audio_always_on {
       None
     } else {
@@ -193,6 +207,7 @@ impl Runtime {
         self.android_bounds()?,
         self.config.release_pixels,
       ),
+      stay_awake,
     })
   }
 
@@ -206,8 +221,9 @@ impl Runtime {
     S: FocusSession,
     CaptureError: std::error::Error + Send + Sync + 'static,
   {
-    self.stop_android_focus(active)?;
+    let stop_result = self.stop_android_focus(active);
     capture.release_capture().await?;
+    stop_result?;
     self.log_focus_change(FocusTarget::Host);
     Ok(())
   }
@@ -372,12 +388,122 @@ struct ActiveSession {
   audio: Option<AudioSession>,
   control: ScrcpyServerControl,
   pointer: VirtualAndroidPointer,
+  stay_awake: Option<StayAwakeGuard>,
 }
 
 impl ActiveSession {
   fn stop(&mut self) -> Result<()> {
     self.audio.take();
-    self.control.stop()
+    self.control.stop()?;
+    if let Some(stay_awake) = self.stay_awake.as_mut() {
+      stay_awake.restore()?;
+    }
+    Ok(())
+  }
+}
+
+trait DeviceSettings {
+  fn get_global_setting(&self, name: &str) -> Result<Option<String>>;
+
+  fn put_global_setting(&self, name: &str, value: &str) -> Result<()>;
+
+  fn delete_global_setting(&self, name: &str) -> Result<()>;
+}
+
+struct AdbDeviceSettings {
+  adb: String,
+  serial: Option<String>,
+}
+
+impl AdbDeviceSettings {
+  fn new(adb: &str, serial: Option<&str>) -> Self {
+    Self {
+      adb: adb.to_string(),
+      serial: serial.map(str::to_string),
+    }
+  }
+}
+
+impl DeviceSettings for AdbDeviceSettings {
+  fn get_global_setting(&self, name: &str) -> Result<Option<String>> {
+    let output = adb_command(&self.adb, self.serial.as_deref())
+      .args(["shell", "settings", "get", "global", name])
+      .output()
+      .with_context(|| format!("failed to read Android global setting {name}"))?;
+    ensure_success(output.status, "adb shell settings get global")?;
+
+    let value = String::from_utf8(output.stdout)
+      .context("Android settings output was not UTF-8")?
+      .trim()
+      .to_string();
+    if value == "null" {
+      Ok(None)
+    } else {
+      Ok(Some(value))
+    }
+  }
+
+  fn put_global_setting(&self, name: &str, value: &str) -> Result<()> {
+    ensure_success(
+      adb_command(&self.adb, self.serial.as_deref())
+        .args(["shell", "settings", "put", "global", name, value])
+        .status()
+        .with_context(|| format!("failed to write Android global setting {name}"))?,
+      "adb shell settings put global",
+    )
+  }
+
+  fn delete_global_setting(&self, name: &str) -> Result<()> {
+    ensure_success(
+      adb_command(&self.adb, self.serial.as_deref())
+        .args(["shell", "settings", "delete", "global", name])
+        .status()
+        .with_context(|| format!("failed to delete Android global setting {name}"))?,
+      "adb shell settings delete global",
+    )
+  }
+}
+
+struct StayAwakeGuard {
+  settings: Box<dyn DeviceSettings>,
+  previous_value: Option<String>,
+  restored: bool,
+}
+
+impl StayAwakeGuard {
+  fn enable(settings: Box<dyn DeviceSettings>) -> Result<Self> {
+    let previous_value = settings.get_global_setting(STAY_AWAKE_SETTING)?;
+    settings.put_global_setting(STAY_AWAKE_SETTING, STAY_AWAKE_WHILE_USB_CONNECTED)?;
+
+    Ok(Self {
+      settings,
+      previous_value,
+      restored: false,
+    })
+  }
+
+  fn restore(&mut self) -> Result<()> {
+    if self.restored {
+      return Ok(());
+    }
+
+    if let Some(previous_value) = &self.previous_value {
+      self
+        .settings
+        .put_global_setting(STAY_AWAKE_SETTING, previous_value)?;
+    } else {
+      self.settings.delete_global_setting(STAY_AWAKE_SETTING)?;
+    }
+    self.restored = true;
+    Ok(())
+  }
+}
+
+impl Drop for StayAwakeGuard {
+  fn drop(&mut self) {
+    if let Err(e) = self.restore() {
+      debug!(error = %e, "failed to restore Android stay-awake setting");
+    }
   }
 }
 
@@ -727,11 +853,88 @@ mod tests {
     assert!(preview.contains("adb-test -s device-1 reverse 'localabstract:scrcpy_<random-scid>'"));
     assert!(preview.contains("adb-test -s device-1 shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server"));
     assert!(preview.contains("video=false audio=false control=true"));
+    assert!(preview.contains("power_on=false"));
     assert!(preview.contains(
       "scrcpy-test --serial device-1 --no-video --no-window --no-control --audio-buffer=250"
     ));
     assert!(!preview.contains("--keyboard=uhid"));
     assert!(!preview.contains("--mouse=uhid"));
+  }
+
+  #[test]
+  fn dry_run_preview_enables_power_on_when_configured() {
+    let config = Config {
+      power_on_on_connect: true,
+      ..Config::default()
+    };
+
+    let preview = Runtime::command_preview(&config);
+
+    assert!(preview.contains("power_on=true"));
+  }
+
+  #[test]
+  fn stay_awake_guard_restores_previous_android_setting() {
+    let settings = FakeDeviceSettings::new("3");
+    let calls = Rc::clone(&settings.calls);
+
+    let mut guard = StayAwakeGuard::enable(Box::new(settings)).unwrap();
+    guard.restore().unwrap();
+
+    assert_eq!(
+      calls.borrow().as_slice(),
+      [
+        SettingsCall::Get(STAY_AWAKE_SETTING.to_string()),
+        SettingsCall::Put(
+          STAY_AWAKE_SETTING.to_string(),
+          STAY_AWAKE_WHILE_USB_CONNECTED.to_string(),
+        ),
+        SettingsCall::Put(STAY_AWAKE_SETTING.to_string(), "3".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn stay_awake_guard_restores_only_once() {
+    let settings = FakeDeviceSettings::new("0");
+    let calls = Rc::clone(&settings.calls);
+
+    let mut guard = StayAwakeGuard::enable(Box::new(settings)).unwrap();
+    guard.restore().unwrap();
+    guard.restore().unwrap();
+
+    assert_eq!(
+      calls.borrow().as_slice(),
+      [
+        SettingsCall::Get(STAY_AWAKE_SETTING.to_string()),
+        SettingsCall::Put(
+          STAY_AWAKE_SETTING.to_string(),
+          STAY_AWAKE_WHILE_USB_CONNECTED.to_string(),
+        ),
+        SettingsCall::Put(STAY_AWAKE_SETTING.to_string(), "0".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn stay_awake_guard_deletes_previously_absent_android_setting() {
+    let settings = FakeDeviceSettings::absent();
+    let calls = Rc::clone(&settings.calls);
+
+    let mut guard = StayAwakeGuard::enable(Box::new(settings)).unwrap();
+    guard.restore().unwrap();
+
+    assert_eq!(
+      calls.borrow().as_slice(),
+      [
+        SettingsCall::Get(STAY_AWAKE_SETTING.to_string()),
+        SettingsCall::Put(
+          STAY_AWAKE_SETTING.to_string(),
+          STAY_AWAKE_WHILE_USB_CONNECTED.to_string(),
+        ),
+        SettingsCall::Delete(STAY_AWAKE_SETTING.to_string()),
+      ]
+    );
   }
 
   #[test]
@@ -1022,6 +1225,7 @@ mod tests {
           ),
           stops: Rc::clone(&stops),
           moves: Rc::clone(&moves),
+          fail_stop: false,
         }))
       })
       .await
@@ -1031,6 +1235,71 @@ mod tests {
     assert_eq!(stops.get(), 1);
     assert_eq!(releases.get(), 1);
     assert_eq!(*moves.borrow(), vec![(10, 0)]);
+  }
+
+  #[tokio::test(flavor = "current_thread")]
+  async fn runtime_releases_capture_when_android_focus_cleanup_fails() {
+    let mut config = Config {
+      activation_pixels: 1,
+      android_width: Some(100),
+      android_height: Some(200),
+      release_pixels: 4,
+      ..Config::default()
+    };
+    config.scrcpy.audio_enabled = false;
+    let session_config = config.clone();
+    let runtime = Runtime::new(config);
+    let releases = Rc::new(Cell::new(0));
+    let starts = Rc::new(Cell::new(0));
+    let stops = Rc::new(Cell::new(0));
+    let moves = Rc::new(RefCell::new(Vec::new()));
+    let mut capture = FakeCapture {
+      events: VecDeque::from([
+        Ok((ANDROID_CAPTURE_HANDLE, CaptureEvent::Begin)),
+        Ok((
+          ANDROID_CAPTURE_HANDLE,
+          CaptureEvent::Input(Event::Pointer(PointerEvent::Motion {
+            time: 0,
+            dx: 10.0,
+            dy: 0.0,
+          })),
+        )),
+        Ok((
+          ANDROID_CAPTURE_HANDLE,
+          CaptureEvent::Input(Event::Pointer(PointerEvent::Motion {
+            time: 0,
+            dx: -10.0,
+            dy: 0.0,
+          })),
+        )),
+      ]),
+      releases: Rc::clone(&releases),
+    };
+
+    let error = runtime
+      .run_capture_loop(&mut capture, || {
+        starts.set(starts.get() + 1);
+        std::future::ready(Ok(FakeSession {
+          pointer: VirtualAndroidPointer::new(
+            session_config.android_edge,
+            VirtualAndroidBounds {
+              width: session_config.android_width.unwrap(),
+              height: session_config.android_height.unwrap(),
+            },
+            session_config.release_pixels,
+          ),
+          stops: Rc::clone(&stops),
+          moves: Rc::clone(&moves),
+          fail_stop: true,
+        }))
+      })
+      .await
+      .unwrap_err();
+
+    assert_eq!(starts.get(), 1);
+    assert_eq!(stops.get(), 1);
+    assert_eq!(releases.get(), 1);
+    assert!(error.to_string().contains("focus cleanup failed"));
   }
 
   struct FakeCapture {
@@ -1053,10 +1322,65 @@ mod tests {
     }
   }
 
+  #[derive(Debug, Eq, PartialEq)]
+  enum SettingsCall {
+    Get(String),
+    Put(String, String),
+    Delete(String),
+  }
+
+  struct FakeDeviceSettings {
+    previous_value: Option<String>,
+    calls: Rc<RefCell<Vec<SettingsCall>>>,
+  }
+
+  impl FakeDeviceSettings {
+    fn new(previous_value: &str) -> Self {
+      Self {
+        previous_value: Some(previous_value.to_string()),
+        calls: Rc::new(RefCell::new(Vec::new())),
+      }
+    }
+
+    fn absent() -> Self {
+      Self {
+        previous_value: None,
+        calls: Rc::new(RefCell::new(Vec::new())),
+      }
+    }
+  }
+
+  impl DeviceSettings for FakeDeviceSettings {
+    fn get_global_setting(&self, name: &str) -> Result<Option<String>> {
+      self
+        .calls
+        .borrow_mut()
+        .push(SettingsCall::Get(name.to_string()));
+      Ok(self.previous_value.clone())
+    }
+
+    fn put_global_setting(&self, name: &str, value: &str) -> Result<()> {
+      self
+        .calls
+        .borrow_mut()
+        .push(SettingsCall::Put(name.to_string(), value.to_string()));
+      Ok(())
+    }
+
+    fn delete_global_setting(&self, name: &str) -> Result<()> {
+      self
+        .calls
+        .borrow_mut()
+        .push(SettingsCall::Delete(name.to_string()));
+      Ok(())
+    }
+  }
+
   struct FakeSession {
     pointer: VirtualAndroidPointer,
     stops: Rc<Cell<usize>>,
     moves: Rc<RefCell<Vec<(i32, i32)>>>,
+    fail_stop: bool,
   }
 
   impl FocusSession for FakeSession {
@@ -1083,6 +1407,9 @@ mod tests {
 
     fn stop(&mut self) -> Result<()> {
       self.stops.set(self.stops.get() + 1);
+      if self.fail_stop {
+        bail!("focus cleanup failed");
+      }
       Ok(())
     }
   }

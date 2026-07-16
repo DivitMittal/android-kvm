@@ -17,6 +17,8 @@ pub struct Config {
   pub poll_interval_ms: u64,
   pub pointer_scale: f32,
   pub audio_always_on: bool,
+  pub keep_awake_while_connected: bool,
+  pub power_on_on_connect: bool,
   pub adb_binary: String,
   pub android_width: Option<i32>,
   pub android_height: Option<i32>,
@@ -34,6 +36,8 @@ impl Default for Config {
       poll_interval_ms: 16,
       pointer_scale: 1.0,
       audio_always_on: true,
+      keep_awake_while_connected: true,
+      power_on_on_connect: false,
       adb_binary: "adb".to_string(),
       android_width: None,
       android_height: None,
@@ -130,6 +134,28 @@ audio-always-on = false
   #[test]
   fn defaults_audio_to_always_on() {
     assert!(Config::default().audio_always_on);
+  }
+
+  #[test]
+  fn parses_kebab_case_power_options() {
+    let config: Config = toml::from_str(
+      r#"
+keep-awake-while-connected = false
+power-on-on-connect = true
+"#,
+    )
+    .unwrap();
+
+    assert!(!config.keep_awake_while_connected);
+    assert!(config.power_on_on_connect);
+  }
+
+  #[test]
+  fn defaults_to_keep_awake_without_power_on() {
+    let config = Config::default();
+
+    assert!(config.keep_awake_while_connected);
+    assert!(!config.power_on_on_connect);
   }
 
   #[test]

@@ -48,31 +48,39 @@ pub struct ScrcpyServerControl {
   socket_name: String,
 }
 
+pub struct ScrcpyServerOptions<'a> {
+  pub adb: &'a str,
+  pub serial: Option<&'a str>,
+  pub scrcpy_binary: &'a str,
+  pub server_path: Option<&'a str>,
+  pub port: u16,
+  pub power_on: bool,
+}
+
 impl ScrcpyServerControl {
-  pub fn command_preview(
-    adb: &str,
-    serial: Option<&str>,
-    scrcpy_binary: &str,
-    server_path: Option<&str>,
-    port: u16,
-  ) -> String {
+  pub fn command_preview(options: ScrcpyServerOptions<'_>) -> String {
     let device_server_path = "/data/local/tmp/scrcpy-server.jar";
-    let host_server_path = server_path.unwrap_or("<scrcpy-server-from-scrcpy>");
-    let control_port = if port == 0 {
+    let host_server_path = options.server_path.unwrap_or("<scrcpy-server-from-scrcpy>");
+    let control_port = if options.port == 0 {
       "<allocated-control-port>".to_string()
     } else {
-      port.to_string()
+      options.port.to_string()
     };
     let socket_name = "scrcpy_<random-scid>";
+    let power_on = scrcpy_bool_option("power_on", options.power_on);
 
     [
-      shell_words(adb_words(adb, serial).chain(["push", host_server_path, device_server_path])),
-      shell_words(adb_words(adb, serial).chain([
+      shell_words(adb_words(options.adb, options.serial).chain([
+        "push",
+        host_server_path,
+        device_server_path,
+      ])),
+      shell_words(adb_words(options.adb, options.serial).chain([
         "reverse",
         &format!("localabstract:{socket_name}"),
         &format!("tcp:{control_port}"),
       ])),
-      shell_words(adb_words(adb, serial).chain([
+      shell_words(adb_words(options.adb, options.serial).chain([
         "shell",
         &format!("CLASSPATH={device_server_path}"),
         "app_process",
@@ -89,28 +97,26 @@ impl ScrcpyServerControl {
         "send_frame_meta=false",
         "clipboard_autosync=false",
         "cleanup=false",
-        "power_on=false",
+        &power_on,
       ])),
-      format!("# scrcpy binary used for server discovery: {scrcpy_binary}"),
+      format!(
+        "# scrcpy binary used for server discovery: {}",
+        options.scrcpy_binary
+      ),
     ]
     .join("\n")
   }
 
-  pub fn start(
-    adb: &str,
-    serial: Option<&str>,
-    scrcpy_binary: &str,
-    server_path: Option<&str>,
-    port: u16,
-  ) -> Result<Self> {
-    let server_path = resolve_server_path(scrcpy_binary, server_path)?;
-    let version = scrcpy_version(scrcpy_binary)?;
+  pub fn start(options: ScrcpyServerOptions<'_>) -> Result<Self> {
+    let server_path = resolve_server_path(options.scrcpy_binary, options.server_path)?;
+    let version = scrcpy_version(options.scrcpy_binary)?;
     let scid = random_scid()?;
     let socket_name = format!("scrcpy_{scid:08x}");
     let device_server_path = "/data/local/tmp/scrcpy-server.jar";
+    let power_on = scrcpy_bool_option("power_on", options.power_on);
 
     ensure_success(
-      adb_command(adb, serial)
+      adb_command(options.adb, options.serial)
         .args([
           "push",
           server_path
@@ -119,12 +125,12 @@ impl ScrcpyServerControl {
           device_server_path,
         ])
         .status()
-        .with_context(|| format!("failed to push scrcpy server with {adb}"))?,
+        .with_context(|| format!("failed to push scrcpy server with {}", options.adb))?,
       "adb push scrcpy-server",
     )?;
 
-    let listener = TcpListener::bind(("127.0.0.1", port))
-      .with_context(|| format!("failed to listen on 127.0.0.1:{port}"))?;
+    let listener = TcpListener::bind(("127.0.0.1", options.port))
+      .with_context(|| format!("failed to listen on 127.0.0.1:{}", options.port))?;
     let control_port = listener
       .local_addr()
       .context("failed to read control listener address")?
@@ -134,18 +140,18 @@ impl ScrcpyServerControl {
       .context("failed to configure control listener")?;
 
     ensure_success(
-      adb_command(adb, serial)
+      adb_command(options.adb, options.serial)
         .args([
           "reverse",
           &format!("localabstract:{socket_name}"),
           &format!("tcp:{control_port}"),
         ])
         .status()
-        .with_context(|| format!("failed to create adb reverse tunnel with {adb}"))?,
+        .with_context(|| format!("failed to create adb reverse tunnel with {}", options.adb))?,
       "adb reverse scrcpy control socket",
     )?;
 
-    let mut process = adb_command(adb, serial)
+    let mut process = adb_command(options.adb, options.serial)
       .args([
         "shell",
         &format!("CLASSPATH={device_server_path}"),
@@ -163,11 +169,11 @@ impl ScrcpyServerControl {
         "send_frame_meta=false",
         "clipboard_autosync=false",
         "cleanup=false",
-        "power_on=false",
+        &power_on,
       ])
       .stderr(Stdio::piped())
       .spawn()
-      .with_context(|| format!("failed to start scrcpy server with {adb}"))?;
+      .with_context(|| format!("failed to start scrcpy server with {}", options.adb))?;
 
     let stream = accept_control_connection(&listener, &mut process)
       .context("failed to accept scrcpy control connection")?;
@@ -189,8 +195,8 @@ impl ScrcpyServerControl {
     Ok(Self {
       process,
       control,
-      adb: adb.to_string(),
-      serial: serial.map(str::to_string),
+      adb: options.adb.to_string(),
+      serial: options.serial.map(str::to_string),
       socket_name,
     })
   }
@@ -407,12 +413,16 @@ fn write_u16(buf: &mut Vec<u8>, value: u16) {
   buf.extend_from_slice(&value.to_be_bytes());
 }
 
-fn adb_command(adb: &str, serial: Option<&str>) -> Command {
+pub(crate) fn adb_command(adb: &str, serial: Option<&str>) -> Command {
   let mut command = Command::new(adb);
   if let Some(serial) = serial {
     command.args(["-s", serial]);
   }
   command
+}
+
+fn scrcpy_bool_option(name: &str, enabled: bool) -> String {
+  format!("{name}={enabled}")
 }
 
 fn adb_words<'a>(adb: &'a str, serial: Option<&'a str>) -> impl Iterator<Item = &'a str> {
@@ -475,11 +485,15 @@ fn random_scid() -> Result<u32> {
   let mut bytes = [0u8; 4];
   getrandom::fill(&mut bytes)
     .map_err(|error| anyhow::anyhow!("failed to generate scrcpy scid: {error}"))?;
-  let scid = u32::from_ne_bytes(bytes);
+  // Mask to the signed-int range so the value parses on scrcpy 4.0, which uses
+  // Integer.parseInt (signed 32-bit) for the `scid` option. Any value with bit 31
+  // set (>= 0x80000000) overflows and triggers NumberFormatException on the server.
+  // Scrcpy 4.1+ switched to Long.parseLong, so this mask is harmless there too.
+  let scid = u32::from_ne_bytes(bytes) & 0x7FFF_FFFF;
   Ok(scid.max(1))
 }
 
-fn ensure_success(status: std::process::ExitStatus, label: &str) -> Result<()> {
+pub(crate) fn ensure_success(status: std::process::ExitStatus, label: &str) -> Result<()> {
   if status.success() {
     return Ok(());
   }
@@ -691,13 +705,14 @@ mod tests {
 
   #[test]
   fn server_command_preview_uses_direct_app_process_control_path() {
-    let preview = ScrcpyServerControl::command_preview(
-      "adb-test",
-      Some("device-1"),
-      "scrcpy-test",
-      Some("/tmp/scrcpy-server"),
-      27183,
-    );
+    let preview = ScrcpyServerControl::command_preview(ScrcpyServerOptions {
+      adb: "adb-test",
+      serial: Some("device-1"),
+      scrcpy_binary: "scrcpy-test",
+      server_path: Some("/tmp/scrcpy-server"),
+      port: 27183,
+      power_on: false,
+    });
 
     assert!(preview.contains("adb-test -s device-1 push /tmp/scrcpy-server"));
     assert!(
@@ -705,8 +720,23 @@ mod tests {
         .contains("adb-test -s device-1 reverse 'localabstract:scrcpy_<random-scid>' tcp:27183")
     );
     assert!(preview.contains("adb-test -s device-1 shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server"));
+    assert!(preview.contains("power_on=false"));
     assert!(preview.contains("# scrcpy binary used for server discovery: scrcpy-test"));
     assert!(!preview.contains("scrcpy --no-video"));
+  }
+
+  #[test]
+  fn server_command_preview_can_power_on_device() {
+    let preview = ScrcpyServerControl::command_preview(ScrcpyServerOptions {
+      adb: "adb-test",
+      serial: None,
+      scrcpy_binary: "scrcpy-test",
+      server_path: None,
+      port: 0,
+      power_on: true,
+    });
+
+    assert!(preview.contains("power_on=true"));
   }
 
   #[cfg(unix)]
