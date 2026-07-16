@@ -18,13 +18,15 @@ in {
     };
 
     settings = lib.mkOption {
-      type = toml.type;
+      inherit (toml) type;
       default = {};
       example = {
         android-edge = "right";
         activation-pixels = 24;
         release-pixels = 4;
         audio-always-on = true;
+        keep-awake-while-connected = true;
+        power-on-on-connect = false;
         scrcpy = {
           audio-enabled = true;
           audio-buffer-ms = 200;

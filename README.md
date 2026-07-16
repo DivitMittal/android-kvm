@@ -96,6 +96,12 @@ Enter the development shell:
 nix develop
 ```
 
+Run directly from GitHub:
+
+```bash
+nix run github:DivitMittal/android-kvm
+```
+
 Validate that configured dependencies are available:
 
 ```bash
@@ -141,50 +147,7 @@ Resting at the host edge is not enough to activate Android focus; the outward sw
 
 ## Configuration
 
-By default, `android-kvm` reads:
-
-```text
-${XDG_CONFIG_HOME:-~/.config}/android-kvm/config.toml
-```
-
-Example:
-
-```toml
-android-edge = "right"
-activation-pixels = 24
-release-pixels = 4
-poll-interval-ms = 16
-pointer-scale = 1.0
-audio-always-on = true
-adb-binary = "adb"
-android-width = 1080
-android-height = 2400
-control-port = 0
-
-[scrcpy]
-binary = "scrcpy"
-serial = "DEVICE_SERIAL"
-audio-enabled = true
-audio-buffer-ms = 200
-extra-args = []
-```
-
-| Option | Purpose |
-| --- | --- |
-| `android-edge` | Host edge used to enter Android focus: `left`, `right`, `top`, or `bottom`. |
-| `activation-pixels` | Outward swipe distance required after reaching the host edge. Increase this if capture activates too easily. |
-| `release-pixels` | Distance from the Android return edge that releases capture back to the host. |
-| `poll-interval-ms` | Capture/runtime poll interval. |
-| `pointer-scale` | Multiplier for relative pointer motion before forwarding to Android. |
-| `audio-always-on` | Keep the audio-only scrcpy process alive even while host focus is active. |
-| `adb-binary` | `adb` executable path or name. |
-| `android-width`, `android-height` | Android virtual display bounds for return-edge tracking. If omitted, `android-kvm` queries `adb shell wm size` and falls back to `1080x2400` with a warning. |
-| `control-port` | Local TCP port for the scrcpy control tunnel. Keep `0` to let the OS allocate a free port. |
-| `scrcpy.binary` | `scrcpy` executable path or name. |
-| `scrcpy.serial` | Optional Android device serial for multi-device setups. |
-| `scrcpy.audio-enabled` | Start an audio-only scrcpy companion process. |
-| `scrcpy.audio-buffer-ms` | Audio buffer passed to scrcpy. |
-| `scrcpy.extra-args` | Extra arguments for the audio-only scrcpy process. |
+By default, `android-kvm` reads `${XDG_CONFIG_HOME:-~/.config}/android-kvm/config.toml`. See the [Configuration wiki page](https://github.com/DivitMittal/android-kvm/wiki/Configuration) for the full TOML example and option reference.
 
 ## Home Manager
 
@@ -210,6 +173,8 @@ Import the flake module and configure `programs.android-kvm`:
       poll-interval-ms = 16;
       pointer-scale = 1.0;
       audio-always-on = true;
+      keep-awake-while-connected = true;
+      power-on-on-connect = false;
       adb-binary = "adb";
 
       scrcpy = {
