@@ -27,6 +27,15 @@
 
 ---
 
+## Demo
+
+<p align="center">
+  <!-- TODO: drop a screen recording at assets/demo.gif showing the cursor gliding from the Mac desktop into the Android device and back. -->
+  <img src="assets/demo.gif" alt="android-kvm demo: cursor moves seamlessly between Mac and Android" width="720" />
+</p>
+
+---
+
 ## Contents
 
 - [Overview](#overview)
