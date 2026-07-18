@@ -32,8 +32,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-  /// Start the configured scrcpy backend.
-  Run {
+  /// Start the configured scrcpy backend as a long-running daemon.
+  Daemon {
     /// Print the scrcpy command without executing it.
     #[arg(long)]
     dry_run: bool,
@@ -55,7 +55,7 @@ fn main() -> Result<()> {
   config.validate()?;
 
   match cli.command {
-    Command::Run { dry_run } => {
+    Command::Daemon { dry_run } => {
       if dry_run {
         println!("{}", Runtime::command_preview(&config));
         return Ok(());
@@ -94,7 +94,7 @@ mod tests {
 
   #[test]
   fn parses_android_edge_override() {
-    let cli = Cli::try_parse_from(["android-kvm", "--android-edge", "left", "run"]).unwrap();
+    let cli = Cli::try_parse_from(["android-kvm", "--android-edge", "left", "daemon"]).unwrap();
 
     assert_eq!(cli.android_edge, Some(Edge::Left));
   }

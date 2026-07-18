@@ -57,7 +57,7 @@ Because the capture layer uses GPL-3.0-or-later lan-mouse crates, this project i
 
 `android-kvm` is past the initial scaffold stage. It currently provides:
 
-- A Rust CLI with `run`, `check`, and `print-config` subcommands.
+- A Rust CLI with `daemon`, `check`, and `print-config` subcommands.
 - TOML configuration from `${XDG_CONFIG_HOME:-~/.config}/android-kvm/config.toml`.
 - lan-mouse-style edge activation with an outward swipe threshold.
 - Relative pointer motion forwarding into Android.
@@ -117,19 +117,19 @@ cargo run -- print-config
 Preview the `adb` / `scrcpy` commands without starting capture:
 
 ```bash
-cargo run -- run --dry-run
+cargo run -- daemon --dry-run
 ```
 
 Run the KVM:
 
 ```bash
-cargo run -- run
+cargo run -- daemon
 ```
 
 Override the configured Android placement for one run:
 
 ```bash
-cargo run -- --android-edge left run
+cargo run -- --android-edge left daemon
 ```
 
 ### Edge Switching
@@ -209,7 +209,7 @@ Common commands:
 nix develop
 cargo test
 cargo run -- check
-cargo run -- run --dry-run
+cargo run -- daemon --dry-run
 nix fmt
 nix flake check
 ```
