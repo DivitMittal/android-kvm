@@ -21,10 +21,15 @@
         };
         packages =
           lib.attrsets.attrValues {
+            # apm-cli isn't in nixpkgs-26.05-darwin (x86_64-darwin);
+            # run the same PyPI release ephemerally via uv there.
+            apm-cli =
+              pkgs.apm-cli or (pkgs.writeShellScriptBin "apm" ''
+                exec ${pkgs.uv}/bin/uv tool run --from apm-cli apm "$@"
+              '');
             inherit
               (pkgs)
               android-tools
-              apm-cli
               cargo
               clippy
               pkg-config
